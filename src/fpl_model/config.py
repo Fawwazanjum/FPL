@@ -40,6 +40,25 @@ class UnderstatConfig(BaseModel):
     enabled: bool = True
 
 
+class ChipsConfig(BaseModel):
+    # Wildcard: only recommended when BOTH the value gap and data-maturity
+    # gates clear — a large gap computed from too few real gameweeks is not
+    # trustworthy, however big it looks (see memory: fpl-model-project, the
+    # GW2 wildcard discussion this was built to formalize).
+    wildcard_gap_threshold: float = 15.0
+    min_games_for_wildcard_confidence: int = 3
+    # Free Hit: recommended when at least this many current starters have no
+    # fixture in a gameweek.
+    free_hit_blank_threshold: int = 4
+    # Triple Captain: recommended when the best captain candidate's projected
+    # haul in a double-gameweek exceeds a normal week's best by this margin.
+    triple_captain_uplift_threshold: float = 4.0
+    # Bench Boost: recommended when the bench's own combined starting-XI-
+    # weighted value in a target gameweek clears this (usually needs a double
+    # gameweek to be worthwhile at all).
+    bench_boost_min_bench_value: float = 12.0
+
+
 class AppConfig(BaseModel):
     team_id: int = Field(gt=0)
     data_dir: Path = Path("./data")
@@ -52,6 +71,7 @@ class AppConfig(BaseModel):
     differential_gamma: float = 1.5
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     understat: UnderstatConfig = Field(default_factory=UnderstatConfig)
+    chips: ChipsConfig = Field(default_factory=ChipsConfig)
     purchase_price_overrides: dict[int, float] = Field(default_factory=dict)
     news_overrides_path: Path = Path("./news_overrides.yaml")
     log_level: str = "INFO"

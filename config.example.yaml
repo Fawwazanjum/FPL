@@ -34,6 +34,13 @@ optimizer:
 understat:
   enabled: true
 
+chips:
+  wildcard_gap_threshold: 15.0 # min horizon-pts gap (ideal squad vs banked) to even consider a wildcard
+  min_games_for_wildcard_confidence: 3 # won't recommend a wildcard until this many real gameweeks have been played
+  free_hit_blank_threshold: 4 # min starters with no fixture to suggest a free hit
+  triple_captain_uplift_threshold: 4.0 # min extra pts a DGW captain pick needs over a normal week
+  bench_boost_min_bench_value: 12.0 # min combined bench value to suggest a bench boost
+
 # Optional: paste exact purchase prices from the FPL app ("My Team") if you
 # want day-one precision instead of the tool's price-history estimate.
 # purchase_price_overrides:

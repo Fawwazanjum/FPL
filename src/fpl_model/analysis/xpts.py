@@ -37,6 +37,7 @@ class XptsBreakdown:
     gameweek: int
     opponent_team_id: int | None
     is_home: bool | None
+    num_fixtures: int
     p_full_involvement: float
     appearance_pts: float
     attacking_pts: float
@@ -242,40 +243,59 @@ def compute_player_xpts_gw(
     chance = snap["chance_of_playing_next_round"]
     p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
     p_full = p_available * minutes_factor
-    appearance_pts = p_available * (minutes_factor * scoring.long_play + (1 - minutes_factor) * scoring.short_play)
 
+    # Loop over ALL of the team's fixtures this gameweek, not just the first —
+    # a blank gameweek (0 fixtures) must zero everything out, and a double
+    # gameweek (2 fixtures) must count for roughly double, both of which
+    # matter a lot for Bench Boost/Triple Captain (Phase 4) even though a
+    # normal single-fixture week is by far the common case.
     fixtures = repository.get_fixtures_for_team_gw(conn, team_id, gameweek)
+    num_fixtures = len(fixtures)
     opponent_id: int | None = None
     is_home: bool | None = None
-    clean_sheet_prob = 0.0
+    expected_clean_sheets = 0.0  # sum of per-fixture clean-sheet probabilities
     conceded_penalty = 0.0
     reasoning_parts = []
+    fixture_descriptions = []
 
     if fixtures and team_id in team_strength:
-        fx = fixtures[0]
-        is_home = fx["team_h"] == team_id
-        opponent_id = fx["team_a"] if is_home else fx["team_h"]
         own_strength = team_strength[team_id]
-        opp_strength = team_strength.get(opponent_id)
-        opp_attack_index = opp_strength.attack_index if opp_strength else 0.0
-        clean_sheet_prob = _clean_sheet_probability(own_strength.defense_index, opp_attack_index)
         team_games = max(1, len(repository.get_finished_fixtures(conn)) // 10)  # rough per-team game count proxy
-        expected_conceded = _expected_conceded_this_fixture(own_strength, opp_attack_index, team_games)
-        conceded_penalty = scoring.goals_conceded.get(position, 0) * (expected_conceded / 2)
-        reasoning_parts.append(f"vs team {opponent_id} ({'H' if is_home else 'A'}), CS prob {clean_sheet_prob:.0%}")
+        for i, fx in enumerate(fixtures):
+            fx_is_home = fx["team_h"] == team_id
+            fx_opponent = fx["team_a"] if fx_is_home else fx["team_h"]
+            if i == 0:
+                is_home, opponent_id = fx_is_home, fx_opponent
+            opp_strength = team_strength.get(fx_opponent)
+            opp_attack_index = opp_strength.attack_index if opp_strength else 0.0
+            cs_prob = _clean_sheet_probability(own_strength.defense_index, opp_attack_index)
+            expected_clean_sheets += cs_prob
+            expected_conceded = _expected_conceded_this_fixture(own_strength, opp_attack_index, team_games)
+            conceded_penalty += scoring.goals_conceded.get(position, 0) * (expected_conceded / 2)
+            fixture_descriptions.append(f"vs team {fx_opponent} ({'H' if fx_is_home else 'A'}, CS prob {cs_prob:.0%})")
+        if num_fixtures > 1:
+            reasoning_parts.append(f"DOUBLE GAMEWEEK: {'; '.join(fixture_descriptions)}")
+        else:
+            reasoning_parts.append(fixture_descriptions[0])
     else:
-        reasoning_parts.append("no fixture found for this gameweek")
+        reasoning_parts.append("no fixture found for this gameweek (blank)")
 
-    clean_sheet_pts = scoring.clean_sheets.get(position, 0) * clean_sheet_prob
-    defcon_pts = scoring.defensive_contribution_points.get(position, 0) * defcon_rate
-    attacking_pts_full90 = attacking_rate
+    # Appearance-scaled components multiply by num_fixtures (0 for a blank
+    # gameweek correctly zeroes everything; 2 for a double gameweek assumes
+    # the player features in both, weighted by the same involvement estimate).
+    appearance_pts = num_fixtures * p_available * (minutes_factor * scoring.long_play + (1 - minutes_factor) * scoring.short_play)
+    clean_sheet_pts = scoring.clean_sheets.get(position, 0) * expected_clean_sheets
+    defcon_pts = scoring.defensive_contribution_points.get(position, 0) * defcon_rate * num_fixtures
+    attacking_pts_full90 = attacking_rate * num_fixtures
+    bonus_rate_total = bonus_rate * num_fixtures
+    card_rate_total = card_rate * num_fixtures
 
     total = appearance_pts + p_full * (
-        attacking_pts_full90 + clean_sheet_pts + defcon_pts + conceded_penalty + bonus_rate + card_rate
+        attacking_pts_full90 + clean_sheet_pts + defcon_pts + conceded_penalty + bonus_rate_total + card_rate_total
     )
 
     if attacking_pts_full90 > 1.0:
-        reasoning_parts.append(f"strong attacking rate ({attacking_pts_full90:.2f} pts/90)")
+        reasoning_parts.append(f"strong attacking rate ({attacking_rate:.2f} pts/90)")
     if defcon_pts > 0.3:
         reasoning_parts.append(f"high DEFCON hit-rate ({defcon_rate:.0%})")
     role_shift = _detect_role_shift(conn, player_id, position, scoring)
@@ -289,16 +309,17 @@ def compute_player_xpts_gw(
         gameweek=gameweek,
         opponent_team_id=opponent_id,
         is_home=is_home,
+        num_fixtures=num_fixtures,
         p_full_involvement=p_full,
         appearance_pts=appearance_pts,
         attacking_pts=p_full * attacking_pts_full90,
         clean_sheet_pts=p_full * clean_sheet_pts,
-        clean_sheet_prob=clean_sheet_prob,
+        clean_sheet_prob=expected_clean_sheets,
         defcon_pts=p_full * defcon_pts,
         defcon_hit_rate=defcon_rate,
         conceded_penalty=p_full * conceded_penalty,
-        bonus_pts=p_full * bonus_rate,
-        card_penalty=p_full * card_rate,
+        bonus_pts=p_full * bonus_rate_total,
+        card_penalty=p_full * card_rate_total,
         total=total,
         reasoning="; ".join(reasoning_parts),
     )

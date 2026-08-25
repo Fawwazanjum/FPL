@@ -118,6 +118,15 @@ def main(argv: list[str] | None = None) -> int:
         recommended_lineup_plan = current_lineup_plan
     report.recommended_lineup = build_lineup_out(conn, recommended_lineup_plan, xpts_next_gw, "recommended_squad")
 
+    from fpl_model.optimizer import chips as chips_module
+    from fpl_model.report.writer import build_chip_advice_out
+
+    chip_bundle = chips_module.recommend_all(
+        conn, squad_state, candidate_ids, positions, clubs, prices, xpts_horizon, xpts_results,
+        transfer_rec, squad_state.upcoming_gameweek, config, scoring, config.form_weights, team_strength,
+    )
+    report.chip_advice = build_chip_advice_out(chip_bundle)
+
     path = write(report, config)
     repository.log_report(conn, report.metadata.generated_at, report.metadata.gameweek, str(path))
     log.info("Report written to %s", path)

@@ -194,6 +194,10 @@ def get_player_recent_gws(conn: sqlite3.Connection, player_id: int, n: int) -> l
     ).fetchall()
 
 
+def get_fixtures_for_gw(conn: sqlite3.Connection, gameweek: int) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM fixtures WHERE gameweek = ?", (gameweek,)).fetchall()
+
+
 def get_fixtures_for_team_gw(conn: sqlite3.Connection, team_id: int, gameweek: int) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM fixtures WHERE gameweek = ? AND (team_h = ? OR team_a = ?)",

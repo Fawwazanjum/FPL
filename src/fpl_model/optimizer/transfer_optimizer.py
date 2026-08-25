@@ -46,6 +46,20 @@ BENCH_WEIGHT_BY_POSITION = {"GKP": 0.15, "DEF": 0.4, "MID": 0.4, "FWD": 0.4}
 DEFAULT_BENCH_WEIGHT = 0.3
 
 
+def compute_squad_value(squad: list[int], positions: dict[int, str], xpts_horizon: dict[int, float]) -> float:
+    """Starting-XI-weighted value of a fixed 15 — same methodology the transfer
+    ILP itself optimizes, used by chips.py to compare a squad's current value
+    against alternatives (e.g. the wildcard ceiling) on a like-for-like basis."""
+    from fpl_model.optimizer.lineup_optimizer import solve as solve_lineup
+
+    lineup = solve_lineup(squad, positions, xpts_horizon)
+    starters = set(lineup.starting_xi)
+    return sum(
+        xpts_horizon.get(p, 0.0) * (1.0 if p in starters else BENCH_WEIGHT_BY_POSITION.get(positions.get(p, "MID"), DEFAULT_BENCH_WEIGHT))
+        for p in squad
+    )
+
+
 @dataclass
 class TransferPlan:
     new_squad: list[int]

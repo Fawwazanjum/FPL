@@ -11,10 +11,13 @@ from fpl_model.analysis.value import ValueResult
 from fpl_model.analysis.xpts import XptsBreakdown
 from fpl_model.config import AppConfig
 from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
+from fpl_model.optimizer.chips import ChipAdvice, ChipAdviceBundle
 from fpl_model.optimizer.lineup_optimizer import LineupPlan
 from fpl_model.optimizer.transfer_optimizer import TransferPlan, TransferRecommendation
 from fpl_model.report.schema import (
     AnalysisSection,
+    ChipAdviceBundleOut,
+    ChipAdviceOut,
     LineupOut,
     LineupPlayerOut,
     PlayerFormOut,
@@ -229,6 +232,25 @@ def build_lineup_out(
         vice_captain=_lineup_player(plan.vice_captain) if plan.vice_captain is not None else None,
         projected_points=round(plan.projected_points, 2),
         based_on=based_on,
+    )
+
+
+def _chip_advice_out(advice: ChipAdvice) -> ChipAdviceOut:
+    return ChipAdviceOut(
+        chip_name=advice.chip_name, recommended_now=advice.recommended_now,
+        reasoning=advice.reasoning, best_window_gw=advice.best_window_gw,
+    )
+
+
+def build_chip_advice_out(bundle: ChipAdviceBundle) -> ChipAdviceBundleOut:
+    return ChipAdviceBundleOut(
+        captain=_chip_advice_out(bundle.captain),
+        wildcard=_chip_advice_out(bundle.wildcard),
+        free_hit=_chip_advice_out(bundle.free_hit),
+        bench_boost=_chip_advice_out(bundle.bench_boost),
+        triple_captain=_chip_advice_out(bundle.triple_captain),
+        blank_gameweeks=bundle.blank_gameweeks,
+        double_gameweeks=bundle.double_gameweeks,
     )
 
 

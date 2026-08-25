@@ -147,10 +147,28 @@ class LineupOut(BaseModel):
     based_on: str  # "current_squad" | "recommended_squad"
 
 
+class ChipAdviceOut(BaseModel):
+    chip_name: str
+    recommended_now: bool
+    reasoning: str
+    best_window_gw: int | None = None
+
+
+class ChipAdviceBundleOut(BaseModel):
+    captain: ChipAdviceOut
+    wildcard: ChipAdviceOut
+    free_hit: ChipAdviceOut
+    bench_boost: ChipAdviceOut
+    triple_captain: ChipAdviceOut
+    blank_gameweeks: dict[int, list[int]] = {}
+    double_gameweeks: dict[int, list[int]] = {}
+
+
 class Report(BaseModel):
     metadata: ReportMetadata
     squad: SquadAssessment
     analysis: AnalysisSection | None = None
     transfer_recommendation: TransferRecommendationOut | None = None
+    chip_advice: ChipAdviceBundleOut | None = None
     current_lineup: LineupOut | None = None
     recommended_lineup: LineupOut | None = None
