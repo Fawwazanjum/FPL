@@ -120,39 +120,48 @@ def recommend_free_hit(
 
 def recommend_bench_boost(
     conn: sqlite3.Connection, squad_state: SquadState, positions: dict[int, str], clubs: dict[int, int],
-    xpts_horizon: dict[int, float], from_gw: int, horizon: int, config: AppConfig,
+    scoring, weights, team_strength, from_gw: int, horizon: int, config: AppConfig,
 ) -> tuple[ChipAdvice, dict[int, list[int]]]:
+    """Evaluated on the bench's own projected value in EACH gameweek of the
+    horizon, not gated on a double gameweek existing — a double gameweek is
+    one way a bench week can be strong, but a genuinely deep squad (e.g. built
+    on a recent wildcard) can have a bench worth activating on a normal single-
+    fixture week too. Gating this on "no double gameweek -> never recommend"
+    was a real bug (thin bench weeks with a DGW would pass; a strong bench in
+    an ordinary week never got a chance), not just an overly-blunt heuristic.
+    """
     if "bboost" not in squad_state.chips_available:
         return ChipAdvice("bboost", False, "Bench Boost already used (or unavailable)."), {}
+
+    from fpl_model.analysis.xpts import compute_player_xpts_gw
 
     team_ids = list({clubs[p] for p in squad_state.current_squad if p in clubs})
     doubles = detect_double_gameweeks(conn, team_ids, from_gw, horizon)
 
-    if not doubles:
-        bench_value = sum(xpts_horizon.get(p, 0.0) for p in squad_state.bench) / max(1, horizon)
-        return ChipAdvice(
-            "bboost", False,
-            f"No double gameweeks in the horizon. Your bench is worth ~{bench_value:.1f} pts/gw on average — "
-            "Bench Boost is rarely worth it outside a double gameweek where your bench also has fixtures.",
-        ), doubles
-
     best_gw, best_value = None, 0.0
-    for gw, dgw_team_ids in doubles.items():
-        dgw_team_set = set(dgw_team_ids)
-        bench_in_dgw = [p for p in squad_state.bench if clubs.get(p) in dgw_team_set]
-        value = sum(xpts_horizon.get(p, 0.0) for p in bench_in_dgw)
-        if value > best_value:
-            best_gw, best_value = gw, value
+    for gw in range(from_gw, from_gw + horizon):
+        bench_value = 0.0
+        for p in squad_state.bench:
+            breakdown = compute_player_xpts_gw(conn, p, gw, scoring, weights, team_strength)
+            if breakdown is not None:
+                bench_value += breakdown.total
+        if bench_value > best_value:
+            best_gw, best_value = gw, bench_value
 
     if best_gw is not None and best_value >= config.chips.bench_boost_min_bench_value:
+        is_double = best_gw in doubles and any(clubs.get(p) in set(doubles[best_gw]) for p in squad_state.bench)
+        qualifier = "boosted by a double gameweek" if is_double else "strong on fixtures/form alone, no double gameweek needed"
         return ChipAdvice(
             "bboost", True,
-            f"GW{best_gw}: your bench has a combined value of {best_value:.1f} pts (helped by a double gameweek) — "
-            "worth Bench Boosting.",
+            f"GW{best_gw}: your bench projects {best_value:.1f} combined pts ({qualifier}) — worth Bench Boosting.",
             best_window_gw=best_gw,
         ), doubles
 
-    return ChipAdvice("bboost", False, "Double gameweek(s) found, but your bench's value in them doesn't clear the threshold yet."), doubles
+    return ChipAdvice(
+        "bboost", False,
+        f"Best bench week in the horizon projects only {best_value:.1f} pts — below the "
+        f"{config.chips.bench_boost_min_bench_value:.1f}pt threshold.",
+    ), doubles
 
 
 def recommend_triple_captain(
@@ -225,7 +234,7 @@ def recommend_all(
     captain_advice = recommend_captain(squad_state, xpts_results, positions)
     wildcard_advice = recommend_wildcard(squad_state, candidate_ids, positions, clubs, prices, xpts_horizon, transfer_rec, config)
     free_hit_advice, blanks = recommend_free_hit(conn, squad_state, positions, clubs, from_gw, horizon, config)
-    bench_boost_advice, doubles = recommend_bench_boost(conn, squad_state, positions, clubs, xpts_horizon, from_gw, horizon, config)
+    bench_boost_advice, doubles = recommend_bench_boost(conn, squad_state, positions, clubs, scoring, weights, team_strength, from_gw, horizon, config)
     triple_captain_advice = recommend_triple_captain(
         conn, squad_state, clubs, normal_week_best_xpts, doubles, scoring, weights, team_strength, config
     )

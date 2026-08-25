@@ -158,16 +158,54 @@ def test_free_hit_not_recommended_when_no_blanks(conn):
     assert advice.recommended_now is False
 
 
-def test_bench_boost_not_recommended_without_double_gameweek(conn):
+def test_bench_boost_not_recommended_when_bench_has_no_data(conn):
     squad_state = _squad_state()
     positions = _positions()
     clubs = _clubs(squad_state.current_squad)
-    xpts = {p: 3.0 for p in squad_state.current_squad}
     config = AppConfig(team_id=1)
 
-    advice, doubles = chips.recommend_bench_boost(conn, squad_state, positions, clubs, xpts, from_gw=2, horizon=1, config=config)
+    advice, doubles = chips.recommend_bench_boost(conn, squad_state, positions, clubs, None, None, None, from_gw=2, horizon=1, config=config)
     assert advice.recommended_now is False
     assert doubles == {}
+
+
+def test_bench_boost_recommended_for_strong_bench_without_double_gameweek(conn):
+    """The actual bug this test guards against: bench boost was previously
+    NEVER recommended unless a double gameweek existed, even if the bench
+    itself was clearly strong on an ordinary single-fixture week."""
+    from fpl_model.config import FormWeights
+    from fpl_model.data.scoring_rules import ScoringRules
+
+    squad_state = _squad_state()
+    clubs = _clubs(squad_state.current_squad)  # bench players 12-15 -> clubs 12-15
+
+    for bench_pid in squad_state.bench:
+        repository.upsert_player_snapshots(conn, [_player_snapshot_row(bench_pid, clubs[bench_pid], 3, 90, 1.2, 0.6)])
+        repository.upsert_player_gw_history(conn, [_gw_history_row(bench_pid, gw, 90, 1.2, 0.6) for gw in range(1, 4)])
+        repository.upsert_fixtures(conn, [
+            {"fixture_id": 2000 + bench_pid, "gameweek": 2, "kickoff_time": "2026-09-01T13:00:00Z",
+             "team_h": clubs[bench_pid], "team_a": 900 + bench_pid, "team_h_difficulty": 2, "team_a_difficulty": 2,
+             "team_h_score": None, "team_a_score": None, "finished": 0},
+        ])
+
+    scoring = ScoringRules(
+        goals_scored={"GKP": 10, "DEF": 6, "MID": 5, "FWD": 4}, assists=3,
+        clean_sheets={"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}, goals_conceded={"GKP": -1, "DEF": -1, "MID": 0, "FWD": 0},
+        defensive_contribution_points={"GKP": 0, "DEF": 2, "MID": 2, "FWD": 2},
+        long_play=2, short_play=1, yellow_cards=-1, red_cards=-3,
+    )
+    weights = FormWeights()
+    team_strength = {clubs[p]: _neutral_team_strength(clubs[p]) for p in squad_state.bench}
+    for bench_pid in squad_state.bench:
+        team_strength[900 + bench_pid] = _neutral_team_strength(900 + bench_pid)
+    positions = _positions()
+    config = AppConfig(team_id=1)
+    config.chips.bench_boost_min_bench_value = 5.0  # low bar so a genuinely strong (not DGW) bench clears it
+
+    advice, doubles = chips.recommend_bench_boost(conn, squad_state, positions, clubs, scoring, weights, team_strength, from_gw=2, horizon=1, config=config)
+    assert advice.recommended_now is True
+    assert doubles == {}  # confirms this passed WITHOUT any double gameweek
+    assert "no double gameweek needed" in advice.reasoning.lower()
 
 
 def _player_snapshot_row(player_id, team_id, element_type, minutes, expected_goals, expected_assists):
