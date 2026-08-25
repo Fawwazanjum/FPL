@@ -4,10 +4,24 @@ import sqlite3
 import time
 from pathlib import Path
 
+from fpl_model.analysis.form import FormResult
 from fpl_model.analysis.squad_state import SquadState
+from fpl_model.analysis.team_strength import TeamStrengthResult
+from fpl_model.analysis.value import ValueResult
+from fpl_model.analysis.xpts import XptsBreakdown
 from fpl_model.config import AppConfig
 from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
-from fpl_model.report.schema import PlayerSnapshotOut, Report, ReportMetadata, SquadAssessment
+from fpl_model.report.schema import (
+    AnalysisSection,
+    PlayerFormOut,
+    PlayerSnapshotOut,
+    PlayerXptsOut,
+    Report,
+    ReportMetadata,
+    SquadAssessment,
+    TeamStrengthOut,
+    ValuePickOut,
+)
 from fpl_model.storage import repository
 
 
@@ -60,6 +74,98 @@ def build_bare_squad_report(conn: sqlite3.Connection, config: AppConfig, squad_s
         players=players,
     )
     return Report(metadata=metadata, squad=squad)
+
+
+def build_analysis_section(
+    conn: sqlite3.Connection,
+    form_results: dict[int, FormResult],
+    xpts_results: dict[int, XptsBreakdown],
+    xpts_horizon: dict[int, float],
+    team_strength: dict[int, TeamStrengthResult],
+    value_results: dict[int, ValueResult],
+    differential_ownership_threshold: float,
+) -> AnalysisSection:
+    from fpl_model.analysis.value import top_differentials, top_template_picks
+    from fpl_model.constants import POSITIONS
+
+    web_names: dict[int, str] = {}
+    for pid in set(form_results) | set(xpts_results) | set(value_results):
+        snap = repository.get_latest_snapshot_for_player(conn, pid)
+        web_names[pid] = snap["web_name"] if snap else str(pid)
+
+    form_out = {
+        pid: PlayerFormOut(
+            player_id=pid,
+            web_name=web_names.get(pid, str(pid)),
+            position=fr.position,
+            form_score=round(fr.form_score, 3),
+            games_played=fr.games_played,
+            last_season_rate=round(fr.last_season_rate, 3),
+            season_rate=round(fr.season_rate, 3),
+            recent_rate_adjusted=round(fr.recent_rate_adjusted, 3),
+            used_position_fallback=fr.used_position_fallback,
+        )
+        for pid, fr in form_results.items()
+    }
+
+    xpts_out = {
+        pid: PlayerXptsOut(
+            player_id=pid,
+            web_name=web_names.get(pid, str(pid)),
+            position=form_results[pid].position if pid in form_results else "MID",
+            xpts_next_gw=round(xr.total, 3),
+            xpts_horizon=round(xpts_horizon.get(pid, xr.total), 3),
+            opponent_team_id=xr.opponent_team_id,
+            is_home=xr.is_home,
+            p_full_involvement=round(xr.p_full_involvement, 3),
+            reasoning=xr.reasoning,
+        )
+        for pid, xr in xpts_results.items()
+    }
+
+    team_names = {row["team_id"]: row["name"] for row in repository.get_latest_team_snapshots(conn)}
+    team_strength_out = [
+        TeamStrengthOut(
+            team_id=ts.team_id,
+            team_name=team_names.get(ts.team_id, str(ts.team_id)),
+            actual_goals_for=ts.actual_goals_for,
+            actual_goals_against=ts.actual_goals_against,
+            attack_xg=round(ts.attack_xg, 2),
+            defense_xgc=round(ts.defense_xgc, 2),
+            attack_overperformance=round(ts.attack_overperformance, 2),
+            defense_overperformance=round(ts.defense_overperformance, 2),
+            attack_index=round(ts.attack_index, 2),
+            defense_index=round(ts.defense_index, 2),
+        )
+        for ts in team_strength.values()
+    ]
+
+    def _to_pick(v: ValueResult, score: float) -> ValuePickOut:
+        return ValuePickOut(
+            player_id=v.player_id,
+            web_name=v.web_name,
+            position=v.position,
+            now_cost_millions=v.now_cost_millions,
+            selected_by_percent=v.selected_by_percent,
+            xpts_horizon=v.xpts_horizon,
+            score=score,
+        )
+
+    top_diff = {
+        pos: [_to_pick(v, v.differential_score) for v in top_differentials(value_results, pos, differential_ownership_threshold)]
+        for pos in POSITIONS
+    }
+    top_template = {
+        pos: [_to_pick(v, v.template_score) for v in top_template_picks(value_results, pos)] for pos in POSITIONS
+    }
+
+    return AnalysisSection(
+        form_by_player=form_out,
+        xpts_by_player=xpts_out,
+        team_strength=team_strength_out,
+        top_differentials=top_diff,
+        top_template_picks=top_template,
+    )
 
 
 def write(report: Report, config: AppConfig) -> Path:

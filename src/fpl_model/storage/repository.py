@@ -173,8 +173,49 @@ def get_player_gw_history_first_appearance(conn: sqlite3.Connection, player_id: 
     ).fetchone()
 
 
+def get_player_gw_history_all(conn: sqlite3.Connection, player_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM player_gw_history WHERE player_id = ? ORDER BY gameweek ASC",
+        (player_id,),
+    ).fetchall()
+
+
+def get_player_history_past(conn: sqlite3.Connection, player_id: int, season_name: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM player_history_past WHERE player_id = ? AND season_name = ?",
+        (player_id, season_name),
+    ).fetchone()
+
+
 def get_player_recent_gws(conn: sqlite3.Connection, player_id: int, n: int) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM player_gw_history WHERE player_id = ? ORDER BY gameweek DESC LIMIT ?",
         (player_id, n),
     ).fetchall()
+
+
+def get_fixtures_for_team_gw(conn: sqlite3.Connection, team_id: int, gameweek: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM fixtures WHERE gameweek = ? AND (team_h = ? OR team_a = ?)",
+        (gameweek, team_id, team_id),
+    ).fetchall()
+
+
+def get_latest_team_snapshots(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT ts.* FROM teams_snapshots ts
+        INNER JOIN (
+            SELECT team_id, MAX(gameweek) AS max_gw FROM teams_snapshots GROUP BY team_id
+        ) latest ON ts.team_id = latest.team_id AND ts.gameweek = latest.max_gw
+        """
+    ).fetchall()
+
+
+def get_all_team_ids(conn: sqlite3.Connection) -> list[int]:
+    rows = conn.execute("SELECT DISTINCT team_id FROM teams_snapshots").fetchall()
+    return [r["team_id"] for r in rows]
+
+
+def get_finished_fixtures(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM fixtures WHERE finished = 1").fetchall()

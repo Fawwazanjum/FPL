@@ -48,6 +48,62 @@ class SquadAssessment(BaseModel):
     players: list[PlayerSnapshotOut]
 
 
+class PlayerFormOut(BaseModel):
+    player_id: int
+    web_name: str
+    position: str
+    form_score: float
+    games_played: int
+    last_season_rate: float
+    season_rate: float
+    recent_rate_adjusted: float
+    used_position_fallback: bool
+
+
+class PlayerXptsOut(BaseModel):
+    player_id: int
+    web_name: str
+    position: str
+    xpts_next_gw: float
+    xpts_horizon: float
+    opponent_team_id: int | None
+    is_home: bool | None
+    p_full_involvement: float
+    reasoning: str
+
+
+class TeamStrengthOut(BaseModel):
+    team_id: int
+    team_name: str
+    actual_goals_for: int
+    actual_goals_against: int
+    attack_xg: float
+    defense_xgc: float
+    attack_overperformance: float
+    defense_overperformance: float
+    attack_index: float
+    defense_index: float
+
+
+class ValuePickOut(BaseModel):
+    player_id: int
+    web_name: str
+    position: str
+    now_cost_millions: float
+    selected_by_percent: float
+    xpts_horizon: float
+    score: float
+
+
+class AnalysisSection(BaseModel):
+    form_by_player: dict[int, PlayerFormOut] = {}
+    xpts_by_player: dict[int, PlayerXptsOut] = {}
+    team_strength: list[TeamStrengthOut] = []
+    top_differentials: dict[str, list[ValuePickOut]] = {}
+    top_template_picks: dict[str, list[ValuePickOut]] = {}
+
+
 class Report(BaseModel):
     metadata: ReportMetadata
     squad: SquadAssessment
+    analysis: AnalysisSection | None = None

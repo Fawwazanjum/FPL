@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from fpl_model.config import AppConfig
 from fpl_model.data.cache import TtlCache
 from fpl_model.data.fpl_client import FplClient, current_or_next_event, last_finished_event_id
+from fpl_model.data.scoping import select_scoped_players
 from fpl_model.storage import repository
 from fpl_model.util.http import FplApiError
 
@@ -97,7 +98,9 @@ def run_full_refresh(
 
     if gw is not None:
         squad_player_ids = [row["player_id"] for row in repository.get_squad_for_gw(conn, config.team_id, gw)]
-        _ingest_element_summaries(conn, client, squad_player_ids, report)
+        scoped_player_ids = select_scoped_players(conn, squad_player_ids)
+        log.info("Fetching element-summary for %d scoped players (squad + top-owned + top-form per position)", len(scoped_player_ids))
+        _ingest_element_summaries(conn, client, list(scoped_player_ids), report)
 
     if not skip_understat:
         pass  # Understat integration lands in Phase 5 (deliberately not built yet)

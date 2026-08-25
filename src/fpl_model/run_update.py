@@ -50,12 +50,40 @@ def main(argv: list[str] | None = None) -> int:
         log.critical("Aborting: %s", exc)
         return 1
 
+    from fpl_model.analysis import form as form_module
+    from fpl_model.analysis import team_strength as team_strength_module
+    from fpl_model.analysis import xpts as xpts_module
     from fpl_model.analysis.squad_state import compute_squad_state
-    from fpl_model.report.writer import build_bare_squad_report, write
+    from fpl_model.analysis.value import compute_value
+    from fpl_model.data.scoping import select_scoped_players
+    from fpl_model.data.scoring_rules import load_scoring_rules
+    from fpl_model.report.writer import build_analysis_section, build_bare_squad_report, write
     from fpl_model.storage import repository
 
     squad_state = compute_squad_state(conn, config)
     report = build_bare_squad_report(conn, config, squad_state)
+
+    scoped_player_ids = list(select_scoped_players(conn, squad_state.current_squad))
+    scoring = load_scoring_rules(config)
+    team_strength = team_strength_module.compute_team_strength(conn)
+    form_results = form_module.compute_all(conn, scoped_player_ids, scoring, config.form_weights)
+    xpts_results = xpts_module.compute_all(
+        conn, scoped_player_ids, squad_state.upcoming_gameweek, config, scoring, team_strength
+    )
+    xpts_horizon = {
+        pid: xpts_module.compute_horizon_xpts(
+            conn, pid, squad_state.upcoming_gameweek, config.xpts_horizon_gws, config.xpts_horizon_decay,
+            scoring, config.form_weights, team_strength,
+        )
+        for pid in scoped_player_ids
+    }
+    value_results = compute_value(conn, scoped_player_ids, xpts_horizon, config)
+
+    report.analysis = build_analysis_section(
+        conn, form_results, xpts_results, xpts_horizon, team_strength, value_results,
+        config.differential_ownership_threshold,
+    )
+
     path = write(report, config)
     repository.log_report(conn, report.metadata.generated_at, report.metadata.gameweek, str(path))
     log.info("Report written to %s", path)
