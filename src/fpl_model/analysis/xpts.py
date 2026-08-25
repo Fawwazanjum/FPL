@@ -116,6 +116,50 @@ def _defcon_hit_rate(conn: sqlite3.Connection, player_id: int, position: str) ->
     return hits / len(played_rows)
 
 
+ROLE_SHIFT_MIN_GAMES = 4
+ROLE_SHIFT_ATTACK_DROP_RATIO = 0.5
+ROLE_SHIFT_ATTACK_RISE_RATIO = 1.8
+ROLE_SHIFT_DEFENSIVE_RISE_RATIO = 1.3
+ROLE_SHIFT_MIN_EARLIER_ATTACK = 0.5
+
+
+def _detect_role_shift(conn: sqlite3.Connection, player_id: int, position: str, scoring: ScoringRules) -> str | None:
+    """Flags a likely change in tactical role (e.g. a midfielder now being played
+    deeper/more defensively, or a defender pushed further forward) by comparing
+    a player's own recent underlying numbers against their own earlier-season
+    baseline — not a generic position assumption. Needs a handful of games on
+    both sides of the split to say anything; returns None otherwise (which is
+    expected/normal early in a season)."""
+    all_rows = repository.get_player_gw_history_all(conn, player_id)
+    played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
+    if len(played_rows) < ROLE_SHIFT_MIN_GAMES:
+        return None
+
+    split = max(1, len(played_rows) // 2)
+    earlier_rows, recent_rows = played_rows[:-split], played_rows[-split:]
+    if not earlier_rows or not recent_rows:
+        return None
+
+    def _rate(rows, key_fn):
+        minutes = sum((r["minutes"] or 0) for r in rows)
+        if minutes <= 0:
+            return 0.0
+        return sum(key_fn(r) for r in rows) / (minutes / 90)
+
+    earlier_attack = _rate(earlier_rows, lambda r: scoring.attacking_points(position, r["expected_goals"] or 0.0, r["expected_assists"] or 0.0))
+    recent_attack = _rate(recent_rows, lambda r: scoring.attacking_points(position, r["expected_goals"] or 0.0, r["expected_assists"] or 0.0))
+    earlier_def = _rate(earlier_rows, lambda r: r["defensive_contribution"] or 0)
+    recent_def = _rate(recent_rows, lambda r: r["defensive_contribution"] or 0)
+
+    if earlier_attack >= ROLE_SHIFT_MIN_EARLIER_ATTACK and recent_attack < earlier_attack * ROLE_SHIFT_ATTACK_DROP_RATIO and (
+        earlier_def == 0 or recent_def > earlier_def * ROLE_SHIFT_DEFENSIVE_RISE_RATIO
+    ):
+        return "attacking output down / defensive actions up vs own earlier-season baseline — possible deeper role, check team news"
+    if recent_attack > 0.5 and earlier_attack > 0 and recent_attack > earlier_attack * ROLE_SHIFT_ATTACK_RISE_RATIO:
+        return "attacking output up vs own earlier-season baseline — possible more advanced role"
+    return None
+
+
 def _card_rate_per90(conn: sqlite3.Connection, player_id: int, scoring: ScoringRules) -> float:
     all_rows = repository.get_player_gw_history_all(conn, player_id)
     played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
@@ -234,6 +278,9 @@ def compute_player_xpts_gw(
         reasoning_parts.append(f"strong attacking rate ({attacking_pts_full90:.2f} pts/90)")
     if defcon_pts > 0.3:
         reasoning_parts.append(f"high DEFCON hit-rate ({defcon_rate:.0%})")
+    role_shift = _detect_role_shift(conn, player_id, position, scoring)
+    if role_shift:
+        reasoning_parts.append(role_shift)
     if p_full < 0.5:
         reasoning_parts.append(f"rotation/fitness risk (minutes-share {minutes_factor:.0%}, n={n_team_games} GW)")
 

@@ -1,11 +1,23 @@
-# Copy to news_overrides.yaml. Claude fills this in from web-searched injury/
-# press-conference news before each report run; it's an optional overlay —
-# absent players fall back to the FPL API's own status/chance_of_playing fields.
+# Copy to news_overrides.yaml. Claude fills this in from web-searched team news
+# before each report run; it's an optional overlay — absent players fall back
+# to the FPL API's own status/chance_of_playing fields and the stat-based
+# role-shift detector in analysis/xpts.py.
 #
 # player_id: <FPL element id>
-# status: out | doubtful | available
-# chance_of_playing_override: 0-100, optional
-# note: short human-readable reason
+#
+# Availability (injury/suspension/rotation doubt):
+#   status: out | doubtful | available
+#   chance_of_playing_override: 0-100, optional
+#
+# Tactical deployment (distinct from availability — this player IS playing,
+# just differently than their FPL position suggests). This is the immediate,
+# news-driven counterpart to the statistical role-shift detector: a manager
+# quote or an observed tactical change is known the moment it happens, before
+# enough games accumulate for the stats to confirm it on their own.
+#   role_note: short description of the deployment change
+#   role_direction: more_attacking | more_defensive
+#
+# note: short human-readable reason (used for either kind of override)
 # source: where this came from
 #
 # players:
@@ -14,4 +26,9 @@
 #     chance_of_playing_override: 50
 #     note: "Manager said 'assessing him daily' in Friday presser"
 #     source: "https://example.com/press-conference"
+#   455:
+#     role_note: "Maresca using him as an auxiliary midfielder at set pieces"
+#     role_direction: more_attacking
+#     note: "Not a guaranteed pattern yet, both chances so far were from corners — but worth weighting up alongside the stat-based signal"
+#     source: "https://example.com/match-report"
 players: {}
