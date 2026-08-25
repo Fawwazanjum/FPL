@@ -7,7 +7,7 @@ Built across GW1-2 of the 2026/27 season. All 5 planned phases are complete.
 
 | What | Where |
 |---|---|
-| **This folder** | `C:\Users\44736\fpl-model` — the whole project: code, tests, config, local data |
+| **This folder** | `C:\Users\44736\Desktop\fpl` — the whole project: code, tests, config, local data |
 | **Code backup / history** | https://github.com/Fawwazanjum/FPL (every change ever made, with commit messages explaining why) |
 | **Dashboard** (visual report) | https://claude.ai/code/artifact/d334b638-3786-4cbd-bec9-42c8a80fa136 — ask Claude to redeploy this after a fresh run to update it |
 | **Your squad/settings** | `config.yaml` (gitignored — this file only exists here, not on GitHub, since it's personal) |
@@ -32,7 +32,7 @@ ingestion, `report/` is the output layer.
 ## Running it
 
 ```
-cd C:\Users\44736\fpl-model
+cd C:\Users\44736\Desktop\fpl
 .venv\Scripts\python.exe -m fpl_model.run_update
 ```
 
