@@ -27,8 +27,8 @@ CLEAN_SHEET_BASE_RATE = 0.30
 CLEAN_SHEET_INDEX_SENSITIVITY = 0.12
 CLEAN_SHEET_MIN, CLEAN_SHEET_MAX = 0.03, 0.75
 CONCEDED_INDEX_SENSITIVITY = 0.15
-UNKNOWN_INVOLVEMENT_START_RATIO = 0.3
 MIN_MINUTES_FACTOR = 0.15
+SEASON_GAMES = 38
 
 
 @dataclass
@@ -128,15 +128,37 @@ def _card_rate_per90(conn: sqlite3.Connection, player_id: int, scoring: ScoringR
     return points / (minutes / 90)
 
 
-def _involvement_probability(snap: sqlite3.Row | None, recent_rows: list[sqlite3.Row]) -> tuple[float, float]:
-    chance = snap["chance_of_playing_next_round"] if snap is not None else None
-    p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
-    if recent_rows:
-        start_ratio = sum(1 for r in recent_rows if (r["minutes"] or 0) >= 60) / len(recent_rows)
+def _minutes_reliability(conn: sqlite3.Connection, player_id: int, last_season_row, weights: FormWeights) -> tuple[float, int]:
+    """Blended share (0-1) of available team minutes this player actually plays —
+    last season's minutes share, this-season-to-date, and recent, blended with
+    the same purple-patch/blip weighting used for scoring rates (form.py /
+    rate_blend.py), just applied to playing time instead of points.
+
+    This is a real (if imperfect) proxy for pecking-order/rotation risk: a
+    player who's genuinely dropped below new signings or in-form teammates
+    shows it here as a declining minutes-share trend over the coming
+    gameweeks, rather than the model overreacting to a single early cameo.
+    """
+    # One row per gameweek the player's team played, minutes=0 if unused — this
+    # is exactly the signal needed (unlike attacking/bonus rates, which only
+    # look at played_rows since a 0-minute game can't have a scoring rate).
+    all_rows = repository.get_player_gw_history_all(conn, player_id)
+    n_team_games = len(all_rows)
+    season_share = sum((r["minutes"] or 0) for r in all_rows) / (n_team_games * 90) if n_team_games > 0 else 0.0
+
+    if last_season_row is not None and (last_season_row["minutes"] or 0) > 0:
+        last_share = min(1.0, last_season_row["minutes"] / (SEASON_GAMES * 90))
     else:
-        start_ratio = UNKNOWN_INVOLVEMENT_START_RATIO
-    minutes_factor = max(MIN_MINUTES_FACTOR, min(1.0, start_ratio))
-    return p_available, minutes_factor
+        # No last-season data (promoted/new signing/transfer in) — fall back to
+        # this season's own share rather than a punitive 0, which would wrongly
+        # drag down a player who's actually nailed on but has no history yet.
+        last_share = season_share
+
+    recent_rows = all_rows[-4:]
+    recent_share = sum((r["minutes"] or 0) for r in recent_rows) / (len(recent_rows) * 90) if recent_rows else season_share
+
+    blend = blend_rate(last_share, season_share, recent_share, n_team_games, weights)
+    return max(MIN_MINUTES_FACTOR, min(1.0, blend.blended_rate)), n_team_games
 
 
 def _clean_sheet_probability(own_defense_index: float, opp_attack_index: float) -> float:
@@ -172,10 +194,9 @@ def compute_player_xpts_gw(
     defcon_rate = _defcon_hit_rate(conn, player_id, position)
     card_rate = _card_rate_per90(conn, player_id, scoring)
 
-    all_rows = repository.get_player_gw_history_all(conn, player_id)
-    played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
-    recent_rows = played_rows[-4:]
-    p_available, minutes_factor = _involvement_probability(snap, recent_rows)
+    minutes_factor, n_team_games = _minutes_reliability(conn, player_id, last_season_row, weights)
+    chance = snap["chance_of_playing_next_round"]
+    p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
     p_full = p_available * minutes_factor
     appearance_pts = p_available * (minutes_factor * scoring.long_play + (1 - minutes_factor) * scoring.short_play)
 
@@ -214,7 +235,7 @@ def compute_player_xpts_gw(
     if defcon_pts > 0.3:
         reasoning_parts.append(f"high DEFCON hit-rate ({defcon_rate:.0%})")
     if p_full < 0.5:
-        reasoning_parts.append(f"rotation/fitness risk (p_involved={p_full:.0%})")
+        reasoning_parts.append(f"rotation/fitness risk (minutes-share {minutes_factor:.0%}, n={n_team_games} GW)")
 
     return XptsBreakdown(
         player_id=player_id,
