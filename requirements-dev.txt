@@ -1,0 +1,3 @@
+pytest>=8.0
+requests-mock>=1.11
+freezegun>=1.4

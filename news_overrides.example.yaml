@@ -1,0 +1,17 @@
+# Copy to news_overrides.yaml. Claude fills this in from web-searched injury/
+# press-conference news before each report run; it's an optional overlay —
+# absent players fall back to the FPL API's own status/chance_of_playing fields.
+#
+# player_id: <FPL element id>
+# status: out | doubtful | available
+# chance_of_playing_override: 0-100, optional
+# note: short human-readable reason
+# source: where this came from
+#
+# players:
+#   328:
+#     status: doubtful
+#     chance_of_playing_override: 50
+#     note: "Manager said 'assessing him daily' in Friday presser"
+#     source: "https://example.com/press-conference"
+players: {}

@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, Field, field_validator
+
+
+class ConfigError(Exception):
+    pass
+
+
+class CacheTtlHours(BaseModel):
+    bootstrap_static: float = 6.0
+    fixtures: float = 12.0
+    element_summary: float = 24.0
+    entry: float = 6.0
+    understat: float = 48.0
+
+
+class FormWeights(BaseModel):
+    last_season_floor_weight: float = 0.15
+    prior_decay_games: int = 8
+    recent_vs_season_split_recent: float = 0.65
+    recent_form_shrinkage_minutes: float = 400.0
+
+
+class OptimizerConfig(BaseModel):
+    max_transfers_considered: int = 5
+    hit_cost: int = 4
+    candidate_pool_per_position: int = 40
+
+
+class UnderstatConfig(BaseModel):
+    enabled: bool = True
+
+
+class AppConfig(BaseModel):
+    team_id: int = Field(gt=0)
+    data_dir: Path = Path("./data")
+    reports_dir: Path = Path("./reports")
+    cache_ttl_hours: CacheTtlHours = Field(default_factory=CacheTtlHours)
+    form_weights: FormWeights = Field(default_factory=FormWeights)
+    xpts_horizon_gws: int = 5
+    xpts_horizon_decay: float = 0.75
+    differential_ownership_threshold: float = 10.0
+    differential_gamma: float = 1.5
+    optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
+    understat: UnderstatConfig = Field(default_factory=UnderstatConfig)
+    purchase_price_overrides: dict[int, float] = Field(default_factory=dict)
+    news_overrides_path: Path = Path("./news_overrides.yaml")
+    log_level: str = "INFO"
+
+    @field_validator("data_dir", "reports_dir", "news_overrides_path", mode="before")
+    @classmethod
+    def _coerce_path(cls, v: object) -> object:
+        return Path(v) if v is not None else v
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "fpl_model.db"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache"
+
+
+def load_config(path: Path) -> AppConfig:
+    path = Path(path)
+    if not path.exists():
+        raise ConfigError(
+            f"Config file not found: {path}. Copy config.example.yaml to config.yaml "
+            "and fill in your team_id."
+        )
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Failed to parse config YAML at {path}: {exc}") from exc
+
+    base_dir = path.resolve().parent
+    for key in ("data_dir", "reports_dir", "news_overrides_path"):
+        if key in raw and raw[key] is not None and not Path(raw[key]).is_absolute():
+            raw[key] = str(base_dir / raw[key])
+
+    try:
+        config = AppConfig.model_validate(raw)
+    except Exception as exc:
+        raise ConfigError(f"Invalid config at {path}: {exc}") from exc
+
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    config.cache_dir.mkdir(parents=True, exist_ok=True)
+    config.reports_dir.mkdir(parents=True, exist_ok=True)
+    return config

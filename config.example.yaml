@@ -1,0 +1,42 @@
+# Copy this file to config.yaml and fill in your team_id.
+# config.yaml is gitignored — it's personal, not committed.
+
+team_id: 0 # your FPL team ID, from the URL when viewing your team, e.g. fantasy.premierleague.com/entry/1234567/...
+
+data_dir: ./data
+reports_dir: ./reports
+
+cache_ttl_hours:
+  bootstrap_static: 6
+  fixtures: 12
+  element_summary: 24
+  entry: 6
+  understat: 48
+
+form_weights:
+  last_season_floor_weight: 0.15
+  prior_decay_games: 8
+  recent_vs_season_split_recent: 0.65
+  recent_form_shrinkage_minutes: 400
+
+xpts_horizon_gws: 5
+xpts_horizon_decay: 0.75
+
+differential_ownership_threshold: 10.0
+differential_gamma: 1.5
+
+optimizer:
+  max_transfers_considered: 5
+  hit_cost: 4
+  candidate_pool_per_position: 40
+
+understat:
+  enabled: true
+
+# Optional: paste exact purchase prices from the FPL app ("My Team") if you
+# want day-one precision instead of the tool's price-history estimate.
+# purchase_price_overrides:
+#   12345: 5.5
+
+news_overrides_path: ./news_overrides.yaml
+log_level: INFO

@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+data/cache/
+data/*.db
+reports/*.json
+logs/*.log
+config.yaml
+news_overrides.yaml
