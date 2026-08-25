@@ -84,6 +84,40 @@ def main(argv: list[str] | None = None) -> int:
         config.differential_ownership_threshold,
     )
 
+    from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
+    from fpl_model.optimizer import lineup_optimizer, transfer_optimizer
+    from fpl_model.report.writer import build_lineup_out, build_transfer_recommendation_out
+
+    candidate_ids = sorted(set(scoped_player_ids) | set(squad_state.current_squad))
+    positions: dict[int, str] = {}
+    clubs: dict[int, int] = {}
+    prices: dict[int, int] = {}
+    for pid in candidate_ids:
+        snap = repository.get_latest_snapshot_for_player(conn, pid)
+        if snap is None:
+            continue
+        positions[pid] = ELEMENT_TYPE_ID_TO_POSITION.get(snap["element_type"], "MID")
+        clubs[pid] = snap["team_id"]
+        prices[pid] = snap["now_cost"]
+
+    transfer_rec = transfer_optimizer.recommend_transfers(
+        squad_state, candidate_ids, positions, clubs, prices, xpts_horizon, config
+    )
+    report.transfer_recommendation = build_transfer_recommendation_out(conn, transfer_rec)
+
+    xpts_next_gw = {pid: xr.total for pid, xr in xpts_results.items()}
+    current_lineup_plan = lineup_optimizer.solve(squad_state.current_squad, positions, xpts_next_gw)
+    report.current_lineup = build_lineup_out(conn, current_lineup_plan, xpts_next_gw, "current_squad")
+
+    recommended_squad = (
+        transfer_rec.hit_option.new_squad if transfer_rec.recommended == "hit" else transfer_rec.banked_option.new_squad
+    )
+    if recommended_squad and set(recommended_squad) != set(squad_state.current_squad):
+        recommended_lineup_plan = lineup_optimizer.solve(recommended_squad, positions, xpts_next_gw)
+    else:
+        recommended_lineup_plan = current_lineup_plan
+    report.recommended_lineup = build_lineup_out(conn, recommended_lineup_plan, xpts_next_gw, "recommended_squad")
+
     path = write(report, config)
     repository.log_report(conn, report.metadata.generated_at, report.metadata.gameweek, str(path))
     log.info("Report written to %s", path)

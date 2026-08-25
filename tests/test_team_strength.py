@@ -63,3 +63,30 @@ def test_attack_index_ranks_higher_xg_team_above_lower(conn):
 
     result = compute_team_strength(conn)
     assert result[1].attack_index > result[2].attack_index
+
+
+def test_single_game_index_is_heavily_shrunk_toward_neutral(conn):
+    # One extreme early-season performance (huge xG gap after 1 game) should NOT
+    # produce a near-full-magnitude z-score — this is the bug that let one wild
+    # GW1 result badly distort clean-sheet-probability/xPts for many gameweeks.
+    repository.upsert_team_snapshots(conn, [_team_snapshot(1, "Strong"), _team_snapshot(2, "Weak")])
+    repository.upsert_player_snapshots(conn, [_player_snapshot(101, 1, 90, 5.0, 1.0), _player_snapshot(201, 2, 90, 0.1, 1.0)])
+    repository.upsert_fixtures(conn, [_fixture(1, 1, 1, 2, 1, 1)])
+
+    result = compute_team_strength(conn)
+    assert result[1].games_played == 1
+    raw_z = 1.0  # symmetric 2-team z-score is always +/-1
+    expected_shrunk = raw_z * (1 / (1 + 8))
+    assert abs(result[1].attack_index - expected_shrunk) < 1e-9
+    assert abs(result[1].attack_index) < 0.2  # heavily damped, not near +/-1
+
+
+def test_more_games_played_trusts_the_index_more(conn):
+    repository.upsert_team_snapshots(conn, [_team_snapshot(1, "Strong"), _team_snapshot(2, "Weak")])
+    repository.upsert_player_snapshots(conn, [_player_snapshot(101, 1, 90, 5.0, 1.0), _player_snapshot(201, 2, 90, 0.1, 1.0)])
+    # 8 finished fixtures between the same two teams -> games_played=8 each
+    repository.upsert_fixtures(conn, [_fixture(i, i, 1, 2, 1, 1) for i in range(1, 9)])
+
+    result = compute_team_strength(conn)
+    assert result[1].games_played == 8
+    assert abs(result[1].attack_index - 0.5) < 1e-9  # shrink = 8/(8+8) = 0.5

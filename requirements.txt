@@ -1,5 +1,5 @@
 requests>=2.31
 pydantic>=2.6
 PyYAML>=6.0
-PuLP>=2.8
+PuLP>=2.8,<4.0
 understatapi>=0.5

@@ -29,6 +29,7 @@ optimizer:
   max_transfers_considered: 5
   hit_cost: 4
   candidate_pool_per_position: 40
+  hit_margin_required: 2.0 # a hit must net at least this many more points than banking to be recommended
 
 understat:
   enabled: true

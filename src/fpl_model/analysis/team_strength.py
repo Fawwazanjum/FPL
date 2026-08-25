@@ -18,10 +18,20 @@ from dataclasses import dataclass
 
 from fpl_model.storage import repository
 
+# Same purple-patch/blip discipline applied to player minutes/form (see
+# rate_blend.py) applied at the team level: a z-score computed from just 1-2
+# games is extremely noisy (one big win/loss swings it by several std devs)
+# and gets treated by xpts.py as a stable clean-sheet-probability signal if
+# left unshrunk. Denominator chosen so index magnitude ramps up gradually
+# over a team's first ~8-10 games rather than being taken at face value
+# immediately — deliberately conservative, not calibrated against real data.
+TEAM_STRENGTH_SHRINKAGE_GAMES = 8
+
 
 @dataclass
 class TeamStrengthResult:
     team_id: int
+    games_played: int
     actual_goals_for: int
     actual_goals_against: int
     attack_xg: float
@@ -32,9 +42,10 @@ class TeamStrengthResult:
     defense_index: float
 
 
-def _actual_goals_by_team(conn: sqlite3.Connection) -> tuple[dict[int, int], dict[int, int]]:
+def _actual_goals_by_team(conn: sqlite3.Connection) -> tuple[dict[int, int], dict[int, int], dict[int, int]]:
     goals_for: dict[int, int] = {}
     goals_against: dict[int, int] = {}
+    games_played: dict[int, int] = {}
     for fx in repository.get_finished_fixtures(conn):
         h, a = fx["team_h"], fx["team_a"]
         hs, as_ = fx["team_h_score"] or 0, fx["team_a_score"] or 0
@@ -42,7 +53,9 @@ def _actual_goals_by_team(conn: sqlite3.Connection) -> tuple[dict[int, int], dic
         goals_against[h] = goals_against.get(h, 0) + as_
         goals_for[a] = goals_for.get(a, 0) + as_
         goals_against[a] = goals_against.get(a, 0) + hs
-    return goals_for, goals_against
+        games_played[h] = games_played.get(h, 0) + 1
+        games_played[a] = games_played.get(a, 0) + 1
+    return goals_for, goals_against, games_played
 
 
 def _attack_xg_and_defense_xgc_by_team(conn: sqlite3.Connection) -> tuple[dict[int, float], dict[int, float]]:
@@ -72,7 +85,7 @@ def _zscores(values: dict[int, float]) -> dict[int, float]:
 
 
 def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthResult]:
-    goals_for, goals_against = _actual_goals_by_team(conn)
+    goals_for, goals_against, games_played = _actual_goals_by_team(conn)
     attack_xg, defense_xgc = _attack_xg_and_defense_xgc_by_team(conn)
     team_ids = repository.get_all_team_ids(conn)
 
@@ -87,15 +100,18 @@ def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthRes
         ga = goals_against.get(tid, 0)
         xg = attack_xg.get(tid, 0.0)
         xgc = defense_xgc.get(tid, 0.0)
+        n = games_played.get(tid, 0)
+        shrink = n / (n + TEAM_STRENGTH_SHRINKAGE_GAMES)
         results[tid] = TeamStrengthResult(
             team_id=tid,
+            games_played=n,
             actual_goals_for=gf,
             actual_goals_against=ga,
             attack_xg=xg,
             defense_xgc=xgc,
             attack_overperformance=gf - xg,
             defense_overperformance=xgc - ga,
-            attack_index=attack_z.get(tid, 0.0),
-            defense_index=defense_z.get(tid, 0.0),
+            attack_index=attack_z.get(tid, 0.0) * shrink,
+            defense_index=defense_z.get(tid, 0.0) * shrink,
         )
     return results

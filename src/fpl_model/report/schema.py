@@ -75,6 +75,7 @@ class PlayerXptsOut(BaseModel):
 class TeamStrengthOut(BaseModel):
     team_id: int
     team_name: str
+    games_played: int
     actual_goals_for: int
     actual_goals_against: int
     attack_xg: float
@@ -103,7 +104,53 @@ class AnalysisSection(BaseModel):
     top_template_picks: dict[str, list[ValuePickOut]] = {}
 
 
+class TransferMoveOut(BaseModel):
+    player_id: int
+    web_name: str
+    position: str
+    price_millions: float
+
+
+class TransferOptionOut(BaseModel):
+    transfers_in: list[TransferMoveOut]
+    transfers_out: list[TransferMoveOut]
+    transfers_made: int
+    hits_taken: int
+    hit_cost_applied: int
+    gross_xpts: float
+    net_xpts: float
+    budget_remaining_millions: float
+    feasible: bool
+
+
+class TransferRecommendationOut(BaseModel):
+    recommended: str  # "bank" | "hit"
+    margin: float
+    reasoning: list[str]
+    banked_option: TransferOptionOut
+    hit_option: TransferOptionOut
+
+
+class LineupPlayerOut(BaseModel):
+    player_id: int
+    web_name: str
+    position: str
+    xpts_next_gw: float
+
+
+class LineupOut(BaseModel):
+    starting_xi: list[LineupPlayerOut]
+    bench_order: list[LineupPlayerOut]
+    captain: LineupPlayerOut | None
+    vice_captain: LineupPlayerOut | None
+    projected_points: float
+    based_on: str  # "current_squad" | "recommended_squad"
+
+
 class Report(BaseModel):
     metadata: ReportMetadata
     squad: SquadAssessment
     analysis: AnalysisSection | None = None
+    transfer_recommendation: TransferRecommendationOut | None = None
+    current_lineup: LineupOut | None = None
+    recommended_lineup: LineupOut | None = None

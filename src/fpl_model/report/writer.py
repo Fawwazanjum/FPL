@@ -11,8 +11,12 @@ from fpl_model.analysis.value import ValueResult
 from fpl_model.analysis.xpts import XptsBreakdown
 from fpl_model.config import AppConfig
 from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
+from fpl_model.optimizer.lineup_optimizer import LineupPlan
+from fpl_model.optimizer.transfer_optimizer import TransferPlan, TransferRecommendation
 from fpl_model.report.schema import (
     AnalysisSection,
+    LineupOut,
+    LineupPlayerOut,
     PlayerFormOut,
     PlayerSnapshotOut,
     PlayerXptsOut,
@@ -20,6 +24,9 @@ from fpl_model.report.schema import (
     ReportMetadata,
     SquadAssessment,
     TeamStrengthOut,
+    TransferMoveOut,
+    TransferOptionOut,
+    TransferRecommendationOut,
     ValuePickOut,
 )
 from fpl_model.storage import repository
@@ -128,6 +135,7 @@ def build_analysis_section(
         TeamStrengthOut(
             team_id=ts.team_id,
             team_name=team_names.get(ts.team_id, str(ts.team_id)),
+            games_played=ts.games_played,
             actual_goals_for=ts.actual_goals_for,
             actual_goals_against=ts.actual_goals_against,
             attack_xg=round(ts.attack_xg, 2),
@@ -165,6 +173,62 @@ def build_analysis_section(
         team_strength=team_strength_out,
         top_differentials=top_diff,
         top_template_picks=top_template,
+    )
+
+
+def _player_move(conn: sqlite3.Connection, player_id: int) -> TransferMoveOut:
+    snap = repository.get_latest_snapshot_for_player(conn, player_id)
+    return TransferMoveOut(
+        player_id=player_id,
+        web_name=snap["web_name"] if snap else str(player_id),
+        position=ELEMENT_TYPE_ID_TO_POSITION.get(snap["element_type"], "UNK") if snap else "UNK",
+        price_millions=_tenths_to_millions(snap["now_cost"]) if snap else 0.0,
+    )
+
+
+def _build_transfer_option_out(conn: sqlite3.Connection, plan: TransferPlan) -> TransferOptionOut:
+    return TransferOptionOut(
+        transfers_in=[_player_move(conn, p) for p in plan.transfers_in],
+        transfers_out=[_player_move(conn, p) for p in plan.transfers_out],
+        transfers_made=plan.transfers_made,
+        hits_taken=plan.hits_taken,
+        hit_cost_applied=plan.hit_cost_applied,
+        gross_xpts=round(plan.gross_xpts, 2),
+        net_xpts=round(plan.net_xpts, 2),
+        budget_remaining_millions=_tenths_to_millions(plan.budget_remaining_tenths),
+        feasible=plan.feasible,
+    )
+
+
+def build_transfer_recommendation_out(conn: sqlite3.Connection, rec: TransferRecommendation) -> TransferRecommendationOut:
+    return TransferRecommendationOut(
+        recommended=rec.recommended,
+        margin=round(rec.margin, 2),
+        reasoning=rec.reasoning,
+        banked_option=_build_transfer_option_out(conn, rec.banked_option),
+        hit_option=_build_transfer_option_out(conn, rec.hit_option),
+    )
+
+
+def build_lineup_out(
+    conn: sqlite3.Connection, plan: LineupPlan, xpts_next_gw: dict[int, float], based_on: str
+) -> LineupOut:
+    def _lineup_player(player_id: int) -> LineupPlayerOut:
+        snap = repository.get_latest_snapshot_for_player(conn, player_id)
+        return LineupPlayerOut(
+            player_id=player_id,
+            web_name=snap["web_name"] if snap else str(player_id),
+            position=ELEMENT_TYPE_ID_TO_POSITION.get(snap["element_type"], "UNK") if snap else "UNK",
+            xpts_next_gw=round(xpts_next_gw.get(player_id, 0.0), 2),
+        )
+
+    return LineupOut(
+        starting_xi=[_lineup_player(p) for p in plan.starting_xi],
+        bench_order=[_lineup_player(p) for p in plan.bench_order],
+        captain=_lineup_player(plan.captain) if plan.captain is not None else None,
+        vice_captain=_lineup_player(plan.vice_captain) if plan.vice_captain is not None else None,
+        projected_points=round(plan.projected_points, 2),
+        based_on=based_on,
     )
 
 

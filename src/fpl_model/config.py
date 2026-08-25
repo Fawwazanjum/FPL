@@ -29,6 +29,11 @@ class OptimizerConfig(BaseModel):
     max_transfers_considered: int = 5
     hit_cost: int = 4
     candidate_pool_per_position: int = 40
+    # A hit is only ever recommended if it nets at least this many more points
+    # (over the horizon, after the -4/-8/etc. is already subtracted) than
+    # simply banking the transfer — a deliberate conservative bias, not a pure
+    # breakeven optimizer. See memory: fpl-transfer-hit-conservatism.
+    hit_margin_required: float = 2.0
 
 
 class UnderstatConfig(BaseModel):
