@@ -102,8 +102,13 @@ def run_full_refresh(
         log.info("Fetching element-summary for %d scoped players (squad + top-owned + top-form per position)", len(scoped_player_ids))
         _ingest_element_summaries(conn, client, list(scoped_player_ids), report)
 
-    if not skip_understat:
-        pass  # Understat integration lands in Phase 5 (deliberately not built yet)
+        if not skip_understat and config.understat.enabled:
+            # Scoped to the user's own 15 squad players only (not the full
+            # ~100 element-summary pool) — Understat is a scraper, not an
+            # official API, so keeping request volume low reduces the chance
+            # of it getting itself rate-limited/blocked, and this is the
+            # subset that actually matters most to the user.
+            _ingest_understat(conn, squad_player_ids, report)
 
     return report
 
@@ -313,3 +318,67 @@ def _to_float(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _ingest_understat(conn: sqlite3.Connection, player_ids: list[int], report: IngestReport) -> None:
+    """Best-effort — every failure here degrades to a logged data-quality flag,
+    never a critical error, per Understat being an optional enhancement layer."""
+    from fpl_model.data import understat_client
+
+    if not understat_client.is_available():
+        report.data_quality_flags.append("Understat unavailable this run — proceeding without it")
+        return
+
+    league_players = understat_client.get_league_players()
+    if not league_players:
+        report.data_quality_flags.append("Understat league data fetch failed — proceeding without it")
+        return
+
+    for player_id in player_ids:
+        existing = repository.get_understat_mapping(conn, player_id)
+        if existing is not None and existing["understat_id"]:
+            understat_id = existing["understat_id"]
+        else:
+            if existing is not None and not existing["understat_id"]:
+                continue  # already tried and failed to match this player — don't retry every run
+            snap = repository.get_latest_snapshot_for_player(conn, player_id)
+            if snap is None:
+                continue
+            match = understat_client.map_fpl_to_understat(snap["web_name"], league_players)
+            if match is None:
+                repository.upsert_understat_player_map(
+                    conn, [{"fpl_player_id": player_id, "understat_id": None, "match_confidence": 0.0}]
+                )
+                continue
+            understat_id, confidence = match
+            repository.upsert_understat_player_map(
+                conn, [{"fpl_player_id": player_id, "understat_id": understat_id, "match_confidence": confidence}]
+            )
+
+        match_data = understat_client.get_player_match_data(understat_id)
+        if not match_data:
+            continue
+        rows = [
+            {
+                "understat_id": understat_id,
+                "date": m.get("date"),
+                "xg": _to_float(m.get("xG")),
+                "xa": _to_float(m.get("xA")),
+                "shots": _to_int(m.get("shots")),
+                "key_passes": _to_int(m.get("key_passes")),
+                "npxg": _to_float(m.get("npxG")),
+                "minutes": _to_int(m.get("time")),
+            }
+            for m in match_data
+            if m.get("date") is not None
+        ]
+        repository.upsert_understat_player_history(conn, rows)

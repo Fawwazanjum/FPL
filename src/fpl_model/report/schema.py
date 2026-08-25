@@ -164,6 +164,24 @@ class ChipAdviceBundleOut(BaseModel):
     double_gameweeks: dict[int, list[int]] = {}
 
 
+class NewsOverrideOut(BaseModel):
+    player_id: int
+    web_name: str
+    status: str | None = None
+    chance_of_playing_override: int | None = None
+    role_note: str | None = None
+    role_direction: str | None = None
+    set_piece_note: str | None = None
+    note: str | None = None
+    source: str | None = None
+
+
+class UnderstatSummaryOut(BaseModel):
+    available: bool
+    mapped_players: int
+    reasoning: str
+
+
 class Report(BaseModel):
     metadata: ReportMetadata
     squad: SquadAssessment
@@ -172,3 +190,5 @@ class Report(BaseModel):
     chip_advice: ChipAdviceBundleOut | None = None
     current_lineup: LineupOut | None = None
     recommended_lineup: LineupOut | None = None
+    news_overrides_applied: list[NewsOverrideOut] = []
+    understat_summary: UnderstatSummaryOut | None = None

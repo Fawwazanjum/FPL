@@ -21,6 +21,7 @@ from fpl_model.analysis.team_strength import TeamStrengthResult
 from fpl_model.config import AppConfig, FormWeights
 from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
 from fpl_model.data.scoring_rules import DEFCON_THRESHOLD, ScoringRules
+from fpl_model.report.news_overrides import NewsOverride
 from fpl_model.storage import repository
 
 CLEAN_SHEET_BASE_RATE = 0.30
@@ -29,6 +30,11 @@ CLEAN_SHEET_MIN, CLEAN_SHEET_MAX = 0.03, 0.75
 CONCEDED_INDEX_SENSITIVITY = 0.15
 MIN_MINUTES_FACTOR = 0.15
 SEASON_GAMES = 38
+DOUBTFUL_DEFAULT_CHANCE = 0.5
+# A manager quote/observed tactical change is a real, immediate signal (see
+# memory: fpl-model-project, the Guéhi discussion) — modest by design, this
+# nudges the attacking rate rather than overriding the statistical estimate.
+ROLE_DIRECTION_ATTACK_MULTIPLIER = {"more_attacking": 1.15, "more_defensive": 0.85}
 
 
 @dataclass
@@ -224,6 +230,7 @@ def compute_player_xpts_gw(
     scoring: ScoringRules,
     weights: FormWeights,
     team_strength: dict[int, TeamStrengthResult],
+    news_override: NewsOverride | None = None,
 ) -> XptsBreakdown | None:
     from fpl_model.constants import LAST_SEASON_LABEL
 
@@ -239,9 +246,27 @@ def compute_player_xpts_gw(
     defcon_rate = _defcon_hit_rate(conn, player_id, position)
     card_rate = _card_rate_per90(conn, player_id, scoring)
 
+    news_reasoning: list[str] = []
+    if news_override is not None and news_override.role_direction in ROLE_DIRECTION_ATTACK_MULTIPLIER:
+        attacking_rate *= ROLE_DIRECTION_ATTACK_MULTIPLIER[news_override.role_direction]
+    if news_override is not None and news_override.role_note:
+        news_reasoning.append(f"NEWS: {news_override.role_note}")
+    if news_override is not None and news_override.set_piece_note:
+        news_reasoning.append(f"NEWS (set-piece): {news_override.set_piece_note}")
+
     minutes_factor, n_team_games = _minutes_reliability(conn, player_id, last_season_row, weights)
     chance = snap["chance_of_playing_next_round"]
     p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
+    if news_override is not None:
+        if news_override.status == "out":
+            p_available = 0.0
+            news_reasoning.append(f"NEWS: ruled OUT{f' ({news_override.note})' if news_override.note else ''}")
+        elif news_override.chance_of_playing_override is not None:
+            p_available = max(0.0, min(1.0, news_override.chance_of_playing_override / 100))
+            news_reasoning.append(f"NEWS: {p_available:.0%} chance of playing{f' ({news_override.note})' if news_override.note else ''}")
+        elif news_override.status == "doubtful":
+            p_available = DOUBTFUL_DEFAULT_CHANCE
+            news_reasoning.append(f"NEWS: doubtful{f' ({news_override.note})' if news_override.note else ''}")
     p_full = p_available * minutes_factor
 
     # Loop over ALL of the team's fixtures this gameweek, not just the first —
@@ -303,6 +328,7 @@ def compute_player_xpts_gw(
         reasoning_parts.append(role_shift)
     if p_full < 0.5:
         reasoning_parts.append(f"rotation/fitness risk (minutes-share {minutes_factor:.0%}, n={n_team_games} GW)")
+    reasoning_parts.extend(news_reasoning)
 
     return XptsBreakdown(
         player_id=player_id,
@@ -334,11 +360,12 @@ def compute_horizon_xpts(
     scoring: ScoringRules,
     weights: FormWeights,
     team_strength: dict[int, TeamStrengthResult],
+    news_override: NewsOverride | None = None,
 ) -> float:
     total = 0.0
     for i in range(horizon):
         gw = from_gw + i
-        result = compute_player_xpts_gw(conn, player_id, gw, scoring, weights, team_strength)
+        result = compute_player_xpts_gw(conn, player_id, gw, scoring, weights, team_strength, news_override)
         if result is not None:
             total += result.total * (decay**i)
     return total
@@ -351,10 +378,14 @@ def compute_all(
     config: AppConfig,
     scoring: ScoringRules,
     team_strength: dict[int, TeamStrengthResult],
+    news_overrides: dict[int, NewsOverride] | None = None,
 ) -> dict[int, XptsBreakdown]:
+    news_overrides = news_overrides or {}
     results: dict[int, XptsBreakdown] = {}
     for pid in player_ids:
-        breakdown = compute_player_xpts_gw(conn, pid, gameweek, scoring, config.form_weights, team_strength)
+        breakdown = compute_player_xpts_gw(
+            conn, pid, gameweek, scoring, config.form_weights, team_strength, news_overrides.get(pid)
+        )
         if breakdown is not None:
             results[pid] = breakdown
     return results

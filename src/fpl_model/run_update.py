@@ -63,17 +63,22 @@ def main(argv: list[str] | None = None) -> int:
     squad_state = compute_squad_state(conn, config)
     report = build_bare_squad_report(conn, config, squad_state)
 
+    from fpl_model.report.news_overrides import load_news_overrides
+
     scoped_player_ids = list(select_scoped_players(conn, squad_state.current_squad))
     scoring = load_scoring_rules(config)
     team_strength = team_strength_module.compute_team_strength(conn)
+    news_overrides = load_news_overrides(config.news_overrides_path)
+    if news_overrides:
+        log.info("Applying %d manual news override(s)", len(news_overrides))
     form_results = form_module.compute_all(conn, scoped_player_ids, scoring, config.form_weights)
     xpts_results = xpts_module.compute_all(
-        conn, scoped_player_ids, squad_state.upcoming_gameweek, config, scoring, team_strength
+        conn, scoped_player_ids, squad_state.upcoming_gameweek, config, scoring, team_strength, news_overrides
     )
     xpts_horizon = {
         pid: xpts_module.compute_horizon_xpts(
             conn, pid, squad_state.upcoming_gameweek, config.xpts_horizon_gws, config.xpts_horizon_decay,
-            scoring, config.form_weights, team_strength,
+            scoring, config.form_weights, team_strength, news_overrides.get(pid),
         )
         for pid in scoped_player_ids
     }
@@ -126,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         transfer_rec, squad_state.upcoming_gameweek, config, scoring, config.form_weights, team_strength,
     )
     report.chip_advice = build_chip_advice_out(chip_bundle)
+
+    from fpl_model.report.writer import build_news_overrides_applied_out, build_understat_summary_out
+
+    report.news_overrides_applied = build_news_overrides_applied_out(conn, news_overrides)
+    report.understat_summary = build_understat_summary_out(conn, squad_state.current_squad)
 
     path = write(report, config)
     repository.log_report(conn, report.metadata.generated_at, report.metadata.gameweek, str(path))

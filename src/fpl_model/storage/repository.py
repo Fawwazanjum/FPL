@@ -91,6 +91,18 @@ def upsert_understat_player_map(conn: sqlite3.Connection, rows: list[dict[str, A
     _upsert_many(conn, "understat_player_map", cols, rows)
 
 
+def get_understat_mapping(conn: sqlite3.Connection, fpl_player_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM understat_player_map WHERE fpl_player_id = ?", (fpl_player_id,)
+    ).fetchone()
+
+
+def get_understat_player_history(conn: sqlite3.Connection, understat_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM understat_player_history WHERE understat_id = ? ORDER BY date ASC", (understat_id,)
+    ).fetchall()
+
+
 def upsert_understat_player_history(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     cols = ["understat_id", "date", "xg", "xa", "shots", "key_passes", "npxg", "minutes"]
     _upsert_many(conn, "understat_player_history", cols, rows)

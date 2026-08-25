@@ -14,12 +14,14 @@ from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
 from fpl_model.optimizer.chips import ChipAdvice, ChipAdviceBundle
 from fpl_model.optimizer.lineup_optimizer import LineupPlan
 from fpl_model.optimizer.transfer_optimizer import TransferPlan, TransferRecommendation
+from fpl_model.report.news_overrides import NewsOverride
 from fpl_model.report.schema import (
     AnalysisSection,
     ChipAdviceBundleOut,
     ChipAdviceOut,
     LineupOut,
     LineupPlayerOut,
+    NewsOverrideOut,
     PlayerFormOut,
     PlayerSnapshotOut,
     PlayerXptsOut,
@@ -30,6 +32,7 @@ from fpl_model.report.schema import (
     TransferMoveOut,
     TransferOptionOut,
     TransferRecommendationOut,
+    UnderstatSummaryOut,
     ValuePickOut,
 )
 from fpl_model.storage import repository
@@ -252,6 +255,43 @@ def build_chip_advice_out(bundle: ChipAdviceBundle) -> ChipAdviceBundleOut:
         blank_gameweeks=bundle.blank_gameweeks,
         double_gameweeks=bundle.double_gameweeks,
     )
+
+
+def build_news_overrides_applied_out(conn: sqlite3.Connection, news_overrides: dict[int, NewsOverride]) -> list[NewsOverrideOut]:
+    out = []
+    for pid, override in news_overrides.items():
+        snap = repository.get_latest_snapshot_for_player(conn, pid)
+        out.append(
+            NewsOverrideOut(
+                player_id=pid,
+                web_name=snap["web_name"] if snap else str(pid),
+                status=override.status,
+                chance_of_playing_override=override.chance_of_playing_override,
+                role_note=override.role_note,
+                role_direction=override.role_direction,
+                set_piece_note=override.set_piece_note,
+                note=override.note,
+                source=override.source,
+            )
+        )
+    return out
+
+
+def build_understat_summary_out(conn: sqlite3.Connection, player_ids: list[int]) -> UnderstatSummaryOut:
+    from fpl_model.data import understat_client
+
+    available = understat_client.is_available()
+    mapped = 0
+    for pid in player_ids:
+        mapping = repository.get_understat_mapping(conn, pid)
+        if mapping is not None and mapping["understat_id"]:
+            mapped += 1
+
+    if not available:
+        reasoning = "Understat unavailable this run — xPts computed without it, no impact on report validity."
+    else:
+        reasoning = f"{mapped}/{len(player_ids)} squad players matched to Understat (npxG tracked, informational only)."
+    return UnderstatSummaryOut(available=available, mapped_players=mapped, reasoning=reasoning)
 
 
 def write(report: Report, config: AppConfig) -> Path:
