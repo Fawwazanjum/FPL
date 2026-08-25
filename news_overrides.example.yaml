@@ -14,10 +14,22 @@
 # news-driven counterpart to the statistical role-shift detector: a manager
 # quote or an observed tactical change is known the moment it happens, before
 # enough games accumulate for the stats to confirm it on their own.
-#   role_note: short description of the deployment change
-#   role_direction: more_attacking | more_defensive
 #
-# note: short human-readable reason (used for either kind of override)
+# Keep these two apart — they carry different weight and don't necessarily
+# come together:
+#   role_note / role_direction: a genuine change in WHERE a player lines up
+#     for open play (e.g. "played as an auxiliary midfielder the full match").
+#     This is the higher-value signal — more touches/shots/xG over 90 minutes,
+#     likely to recur while the tactical setup holds.
+#   set_piece_note: elevated threat on dead-ball situations specifically (e.g.
+#     "targeted at the near post on corners"). This can exist independently of
+#     open-play role — a center-back can be a corner threat without playing
+#     any higher in open play — and it's a narrower signal: it only pays off
+#     on the ~8-10 set pieces a game, not general run-of-play involvement.
+#     Don't let a set-piece chance get folded into role_direction/attacking
+#     output as if it were open-play involvement — that overstates the signal.
+#
+# note: short human-readable reason (used for any of the above)
 # source: where this came from
 #
 # players:
@@ -27,8 +39,8 @@
 #     note: "Manager said 'assessing him daily' in Friday presser"
 #     source: "https://example.com/press-conference"
 #   455:
-#     role_note: "Maresca using him as an auxiliary midfielder at set pieces"
+#     role_note: "Played as an auxiliary midfielder for the full match"
 #     role_direction: more_attacking
-#     note: "Not a guaranteed pattern yet, both chances so far were from corners — but worth weighting up alongside the stat-based signal"
+#     set_piece_note: "Both chances created were from corners, not open play — treat as dead-ball threat, not confirmed elevated open-play involvement yet"
 #     source: "https://example.com/match-report"
 players: {}
