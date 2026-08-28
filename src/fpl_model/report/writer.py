@@ -148,6 +148,33 @@ def build_analysis_section(
         for pid, fr in form_results.items()
     }
 
+    # DEFCON percentile: needs every player's rate for the SAME position to
+    # rank against, which is exactly what the full-league pool (previously a
+    # ~100-player scoped subset) now makes possible — this simply wasn't a
+    # meaningful stat to compute against a ~15-per-position sample. Computed
+    # here (not in xpts.py) because it's the first point in the pipeline with
+    # visibility across every player at once.
+    def _position_of(pid: int) -> str:
+        return form_results[pid].position if pid in form_results else "MID"
+
+    defcon_by_position: dict[str, list[float]] = {}
+    for pid, xr in xpts_results.items():
+        defcon_by_position.setdefault(_position_of(pid), []).append(xr.defcon_per90)
+    sorted_defcon_by_position = {pos: sorted(rates) for pos, rates in defcon_by_position.items()}
+
+    def _defcon_percentile(pid: int, rate: float) -> float | None:
+        pool = sorted_defcon_by_position.get(_position_of(pid))
+        if not pool or len(pool) < 2:
+            return None
+        # Fraction of the position's pool this player's rate is >= to —
+        # ties (e.g. a shared 0.0 for players who haven't featured) land at
+        # the percentile of the LAST matching entry, not the first, so a
+        # genuine standout isn't dragged down by a crowd of zeros below it.
+        import bisect
+
+        rank = bisect.bisect_right(pool, rate) - 1
+        return round(rank / (len(pool) - 1) * 100, 1)
+
     xpts_out = {
         pid: PlayerXptsOut(
             player_id=pid,
@@ -162,6 +189,8 @@ def build_analysis_section(
             fixture_run=_fixture_run_out(pid),
             transfers_in_event=xr.transfers_in_event,
             transfers_out_event=xr.transfers_out_event,
+            defcon_per90=round(xr.defcon_per90, 2),
+            defcon_percentile=_defcon_percentile(pid, xr.defcon_per90),
         )
         for pid, xr in xpts_results.items()
     }

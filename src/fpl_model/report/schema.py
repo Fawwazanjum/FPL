@@ -81,6 +81,8 @@ class PlayerXptsOut(BaseModel):
     fixture_run: list[FixtureRunEntryOut] = []
     transfers_in_event: int = 0
     transfers_out_event: int = 0
+    defcon_per90: float = 0.0
+    defcon_percentile: float | None = None  # 0-100 within this player's position, across the full league pool
 
 
 class TeamStrengthOut(BaseModel):

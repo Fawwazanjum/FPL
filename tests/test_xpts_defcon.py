@@ -1,4 +1,6 @@
-from fpl_model.analysis.xpts import _defcon_hit_rate
+import math
+
+from fpl_model.analysis.xpts import _defcon_rate_per90, _poisson_p_at_least
 from fpl_model.config import FormWeights
 from fpl_model.storage import repository
 
@@ -17,86 +19,79 @@ def _gw_row(player_id, gw, minutes, defensive_contribution):
     }
 
 
-# _defcon_hit_rate now blends a last-season prior in exactly the same way
-# attacking_rate/bonus_rate already did (see memory: fpl-model-project) —
-# these tests pass last_season_row=None throughout, i.e. a player with no
-# last-season history, which still shrinks this-season's rate toward 0 early
-# on (the same behavior attacking_rate/bonus_rate already had for a brand-new
-# player). That shrinkage is expected, not a bug — see
-# test_last_season_defcon_prior_blends_in below for the case WITH a prior.
+# --- _defcon_rate_per90: blends a RAW per-90 rate (last season / this season
+# / recent), the same kind of quantity throughout — this is the number meant
+# to be read and compared directly between two players, and the thing the
+# earlier "hit-rate" version got wrong was mixing a rate-derived proxy for
+# last season with an actual measured frequency for this season under one
+# label. No threshold logic lives here at all now.
 
 
-def test_defender_below_threshold_never_hits(conn):
-    rows = [_gw_row(1, gw, 90, defensive_contribution=5) for gw in range(1, 4)]
+def test_no_history_gives_zero_rate(conn):
+    rate, n = _defcon_rate_per90(conn, 1, None, WEIGHTS)
+    assert rate == 0.0
+    assert n == 0
+
+
+def test_this_season_rate_reflects_actual_actions_per_90(conn):
+    # 3 games at 90 mins, 9 DC each -> 9.0 DC/90 if taken at face value; with
+    # no last-season prior (n=3, w_last = 1 - 3/8 = 0.625) it's shrunk toward
+    # 0, not trusted outright — same purple-patch discipline as attacking rate.
+    rows = [_gw_row(1, gw, 90, defensive_contribution=9) for gw in range(1, 4)]
     repository.upsert_player_gw_history(conn, rows)
-    assert _defcon_hit_rate(conn, 1, "DEF", None, WEIGHTS) == 0.0
+    rate, n = _defcon_rate_per90(conn, 1, None, WEIGHTS)
+    assert n == 3
+    assert 0.0 < rate < 9.0  # shrunk below face value, not zero and not untouched
 
 
-def test_defender_meets_threshold_every_game(conn):
-    # n=3: w_last = 1 - 3/8 = 0.625, w_season = 0.375; last_rate=0 (no prior)
-    # -> blended = 0.375 * 1.0 = 0.375, not 1.0 — shrunk toward the missing
-    # prior rather than trusting 3 games at face value.
-    rows = [_gw_row(1, gw, 90, defensive_contribution=10) for gw in range(1, 4)]
-    repository.upsert_player_gw_history(conn, rows)
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", None, WEIGHTS) - 0.375) < 1e-9
+def test_last_season_prior_carries_at_zero_games_this_season(conn):
+    # A player with no minutes yet this season but a known last-season rate
+    # should show that rate directly (n=0 -> w_last=1.0), not zero — this is
+    # the Elliot-Anderson-style case: judge a known defensive workhorse by
+    # their track record before a ball's been kicked this season.
+    last_season_row = {"minutes": 3420, "defensive_contribution": 380}  # 10.0 DC/90
+    rate, n = _defcon_rate_per90(conn, 1, last_season_row, WEIGHTS)
+    assert n == 0
+    assert abs(rate - 10.0) < 1e-9
 
 
-def test_defender_mixed_hit_rate(conn):
-    # n=4: w_last = 1 - 4/8 = 0.5, w_season = 0.5; season_rate = 0.5 (2/4 hit)
-    # -> blended = 0.5 * 0.5 = 0.25
-    rows = [
-        _gw_row(1, 1, 90, defensive_contribution=10),
-        _gw_row(1, 2, 90, defensive_contribution=3),
-        _gw_row(1, 3, 90, defensive_contribution=12),
-        _gw_row(1, 4, 90, defensive_contribution=1),
-    ]
-    repository.upsert_player_gw_history(conn, rows)
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", None, WEIGHTS) - 0.25) < 1e-9
+def test_two_players_compare_directly_on_the_raw_rate(conn):
+    # This is the actual point of the metric: given two players' history, the
+    # returned numbers should be directly, transparently comparable — no
+    # threshold, no hidden "hit-rate" abstraction in between.
+    strong = {"minutes": 3420, "defensive_contribution": 456}  # 12.0 DC/90
+    weak = {"minutes": 3420, "defensive_contribution": 190}  # 5.0 DC/90
+    strong_rate, _ = _defcon_rate_per90(conn, 1, strong, WEIGHTS)
+    weak_rate, _ = _defcon_rate_per90(conn, 2, weak, WEIGHTS)
+    assert strong_rate > weak_rate
+    assert abs(strong_rate - 12.0) < 1e-9
+    assert abs(weak_rate - 5.0) < 1e-9
 
 
-def test_midfielder_uses_higher_threshold_than_defender(conn):
-    # 10 meets the DEF threshold but not the MID/FWD threshold (12).
-    # n=2: w_last = 1 - 2/8 = 0.75, w_season = 0.25.
-    rows = [_gw_row(1, gw, 90, defensive_contribution=10) for gw in range(1, 3)]
-    repository.upsert_player_gw_history(conn, rows)
-    assert _defcon_hit_rate(conn, 1, "MID", None, WEIGHTS) == 0.0
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", None, WEIGHTS) - 0.25) < 1e-9
+# --- _poisson_p_at_least: converts a single per-90 rate into P(hit the
+# per-match threshold) — the one place that conversion happens now, instead
+# of being smeared across a rate-proxy AND a real measured frequency.
 
 
-def test_goalkeeper_always_zero_defcon():
-    from fpl_model.data.scoring_rules import DEFCON_THRESHOLD
-
-    assert DEFCON_THRESHOLD["GKP"] is None
+def test_poisson_zero_rate_never_clears_bar():
+    assert _poisson_p_at_least(0.0, 10) == 0.0
 
 
-def test_unused_bench_minutes_excluded_from_rate(conn):
-    # Only gw1 counts as a played row (gw2 is 0 minutes) -> n=1.
-    # w_last = 1 - 1/8 = 0.875, w_season = 0.125, season_rate = 1.0 (1/1 hit)
-    # -> blended = 0.125 * 1.0 = 0.125
-    rows = [
-        _gw_row(1, 1, 90, defensive_contribution=10),
-        _gw_row(1, 2, 0, defensive_contribution=0),  # unused sub, shouldn't count as a "miss"
-    ]
-    repository.upsert_player_gw_history(conn, rows)
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", None, WEIGHTS) - 0.125) < 1e-9
+def test_poisson_matches_known_closed_form_for_k_equals_1():
+    # P(X >= 1) = 1 - P(X = 0) = 1 - e^-mu, exactly, for any Poisson(mu).
+    mu = 2.0
+    expected = 1 - math.exp(-mu)
+    assert abs(_poisson_p_at_least(mu, 1) - expected) < 1e-9
 
 
-def test_last_season_defcon_prior_blends_in(conn):
-    # A player with no games yet this season but a strong last-season record
-    # should show up as a decent DEFCON bet, not zero — this is exactly the
-    # Elliot-Anderson-style case the old (unblended) implementation couldn't
-    # represent at all before a ball was kicked this season.
-    #
-    # A season AVERAGE sitting exactly at the threshold must NOT claim 1.0
-    # (100%) — that would assert the player cleared the bar in literally
-    # every match, which an average alone can't prove (caught via a real
-    # Ampadu example: his 2025/26 average was exactly at the MID threshold,
-    # and the old formula displayed that as a 100% "hit-rate"). Capped at
-    # 0.75 for exactly this reason — see _defcon_hit_rate's docstring.
-    last_season_row = {"minutes": 3420, "defensive_contribution": 380}  # 10.0 DC/90 vs a DEF threshold of 10
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", last_season_row, WEIGHTS) - 0.75) < 1e-9
-
-    # A weaker last-season record (half the threshold on average) should
-    # proxy to well below the strong case above, not 0.
-    last_season_row_weak = {"minutes": 3420, "defensive_contribution": 190}  # 5.0 DC/90 vs threshold 10
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", last_season_row_weak, WEIGHTS) - 0.375) < 1e-9
+def test_poisson_probability_rises_with_rate():
+    threshold = 12
+    low = _poisson_p_at_least(6.0, threshold)
+    at_bar = _poisson_p_at_least(12.0, threshold)
+    high = _poisson_p_at_least(20.0, threshold)
+    assert low < at_bar < high
+    # A rate sitting exactly AT the threshold should land well short of
+    # certainty (Poisson(12) still has real mass below 12) — this is the
+    # direct fix for the bug that let an at-threshold average claim 100%.
+    assert 0.3 < at_bar < 0.7
+    assert high > 0.9

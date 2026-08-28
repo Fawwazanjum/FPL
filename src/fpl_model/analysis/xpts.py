@@ -13,6 +13,7 @@ changing the surrounding architecture.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from dataclasses import dataclass
 
@@ -76,6 +77,7 @@ class XptsBreakdown:
     clean_sheet_prob: float
     defcon_pts: float
     defcon_hit_rate: float
+    defcon_per90: float
     conceded_penalty: float
     bonus_pts: float
     card_penalty: float
@@ -150,56 +152,63 @@ def _bonus_rate_per90(conn: sqlite3.Connection, player_id: int, weights: FormWei
     return blend.blended_rate
 
 
-def _defcon_hit_rate(
-    conn: sqlite3.Connection, player_id: int, position: str, last_season_row, weights: FormWeights
-) -> float:
-    """Blended DEFCON hit-rate: last season / this season / recent, same
-    purple-patch discipline as attacking and bonus rate. Previously this was
-    computed from THIS season alone with no prior at all — after 1 gameweek
-    every player's rate was a binary 0% or 100%, the noisiest number in the
-    whole model for a stat (see memory: fpl-model-project) that's actually one
-    of the more year-to-year-consistent signals for the right player archetype
-    (an Elliot Anderson-type). last_season_row only has a SEASON TOTAL for
-    defensive_contribution, not per-game figures, so there's no way to compute
-    a true last-season hit-RATE (the frequency of clearing the bar in a given
-    match) — this proxies it as how close the average game came to the
-    threshold (average DC/90 over threshold, capped at 1.0), which is a real
-    approximation, not a recovered true hit-rate; flagged here so it's not
-    mistaken for one."""
-    threshold = DEFCON_THRESHOLD.get(position)
-    if not threshold:
-        return 0.0
-
+def _defcon_rate_per90(
+    conn: sqlite3.Connection, player_id: int, last_season_row, weights: FormWeights
+) -> tuple[float, int]:
+    """Blended DEFCON actions-per-90, last season / this season / recent —
+    same purple-patch discipline as attacking rate, and now the SAME KIND of
+    quantity throughout the blend (a rate), not a rate-proxy for one leg and
+    an actual measured frequency for another. That mixing was the root cause
+    of a labeling bug a user caught: the old version derived a last-season
+    component by comparing a season AVERAGE against the per-game threshold
+    and calling the result a 'hit rate' alongside a genuinely-measured
+    this-season hit frequency — an average clearing the bar doesn't mean the
+    player cleared it in literally every match. Blending the raw rate here
+    instead sidesteps that entirely; converting rate -> hit probability
+    happens once, in one place (_poisson_p_at_least), from a single clean
+    number. This is also the number worth showing directly to compare two
+    players' defensive output — see PlayerXptsOut.defcon_per90."""
     if (
         last_season_row is not None
         and (last_season_row["minutes"] or 0) > 0
         and last_season_row["defensive_contribution"] is not None
     ):
-        last_season_dc_per90 = last_season_row["defensive_contribution"] / (last_season_row["minutes"] / 90)
-        ratio = last_season_dc_per90 / threshold
-        # BUG FIX: this used to cap at 1.0, which let a season AVERAGE sitting
-        # exactly at the threshold claim a 100% "hit rate" — caught by the
-        # user (an Ampadu example: 12.0 DC/90 average vs a 12 threshold isn't
-        # proof he cleared the bar in literally every match, and 100% overtly
-        # claimed exactly that). Capped well short of full certainty — this is
-        # still only a proxy from a season total, not a measured frequency.
-        last_rate = min(0.75, ratio * 0.75)
+        last_rate = last_season_row["defensive_contribution"] / (last_season_row["minutes"] / 90)
     else:
         last_rate = 0.0
 
     all_rows = repository.get_player_gw_history_all(conn, player_id)
     played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
     n = len(played_rows)
-    if not played_rows:
-        season_rate = 0.0
-        recent_rate = 0.0
-    else:
-        season_rate = sum(1 for r in played_rows if (r["defensive_contribution"] or 0) >= threshold) / len(played_rows)
-        recent_rows = played_rows[-6:]
-        recent_rate = sum(1 for r in recent_rows if (r["defensive_contribution"] or 0) >= threshold) / len(recent_rows)
+    season_minutes = sum((r["minutes"] or 0) for r in played_rows)
+    season_dc = sum((r["defensive_contribution"] or 0) for r in played_rows)
+    season_rate = season_dc / (season_minutes / 90) if season_minutes > 0 else 0.0
+
+    recent_rows = played_rows[-6:]
+    recent_minutes = sum((r["minutes"] or 0) for r in recent_rows)
+    recent_dc = sum((r["defensive_contribution"] or 0) for r in recent_rows)
+    recent_rate = recent_dc / (recent_minutes / 90) if recent_minutes > 0 else 0.0
 
     blend = blend_rate(last_rate, season_rate, recent_rate, n, weights)
-    return blend.blended_rate
+    return blend.blended_rate, n
+
+
+def _poisson_p_at_least(mu: float, k: int) -> float:
+    """P(X >= k) for X ~ Poisson(mu) — the actual quantity FPL's DEFCON bonus
+    pays out on (clear a fixed per-match action count, or don't; no partial
+    credit), converted from a single per-90 rate rather than an ad-hoc cap.
+    Poisson is a standard, defensible model for a per-match count stat like
+    this; not fitted/validated against real DEFCON distributions, so treat as
+    a reasonable default rather than a calibrated model."""
+    if mu <= 0 or k <= 0:
+        return 0.0 if mu <= 0 else 1.0
+    p_less_than_k = 0.0
+    term = math.exp(-mu)  # P(X = 0)
+    p_less_than_k += term
+    for i in range(1, k):
+        term *= mu / i  # P(X = i) from P(X = i-1)
+        p_less_than_k += term
+    return max(0.0, min(1.0, 1.0 - p_less_than_k))
 
 
 ROLE_SHIFT_MIN_GAMES = 4
@@ -322,7 +331,9 @@ def compute_player_xpts_gw(
     last_season_row = repository.get_player_history_past(conn, player_id, LAST_SEASON_LABEL)
     attacking_rate, n = _attacking_rate_per90(conn, player_id, position, scoring, weights, last_season_row)
     bonus_rate = _bonus_rate_per90(conn, player_id, weights, last_season_row, n)
-    defcon_rate = _defcon_hit_rate(conn, player_id, position, last_season_row, weights)
+    defcon_per90, _ = _defcon_rate_per90(conn, player_id, last_season_row, weights)
+    defcon_threshold = DEFCON_THRESHOLD.get(position)
+    defcon_rate = _poisson_p_at_least(defcon_per90, defcon_threshold) if defcon_threshold else 0.0
     card_rate = _card_rate_per90(conn, player_id, scoring)
 
     news_reasoning: list[str] = []
@@ -439,12 +450,13 @@ def compute_player_xpts_gw(
     if attacking_pts_full90 > 1.0:
         reasoning_parts.append(f"strong attacking rate ({attacking_rate:.2f} pts/90)")
     if defcon_pts > 0.3:
-        # "rate" not "hit-rate" deliberately — this is a blend of a measured
-        # this-season frequency AND a season-average-vs-threshold proxy for
-        # any last-season component (see _defcon_hit_rate), and calling a
-        # blend of those two different things a "hit-rate" overclaims
-        # precision on the proxy half.
-        reasoning_parts.append(f"strong DEFCON rate ({defcon_rate:.0%})")
+        # Lead with the raw per-90 rate — the directly comparable number
+        # between two players — then the derived probability, clearly framed
+        # as an estimate rather than a measured frequency. Position-relative
+        # percentile isn't available here (needs the full player pool, which
+        # this function doesn't see) — that's attached separately in
+        # report/writer.py as PlayerXptsOut.defcon_percentile.
+        reasoning_parts.append(f"DEFCON {defcon_per90:.1f}/90 (~{defcon_rate:.0%} est. chance of clearing the bar)")
     role_shift = _detect_role_shift(conn, player_id, position, scoring)
     if role_shift:
         reasoning_parts.append(role_shift)
@@ -474,6 +486,7 @@ def compute_player_xpts_gw(
         clean_sheet_prob=expected_clean_sheets,
         defcon_pts=p_full * defcon_pts,
         defcon_hit_rate=defcon_rate,
+        defcon_per90=defcon_per90,
         conceded_penalty=p_full * conceded_penalty,
         bonus_pts=p_full * bonus_rate_total,
         card_penalty=p_full * card_rate_total,
