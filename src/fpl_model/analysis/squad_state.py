@@ -75,6 +75,25 @@ def compute_squad_state(conn: sqlite3.Connection, config: AppConfig) -> SquadSta
         captain_id = next((p["player_id"] for p in picks if p["is_captain"]), None)
         vice_captain_id = next((p["player_id"] for p in picks if p["is_vice_captain"]), None)
 
+        # Bridge for a real transfer the API hasn't surfaced yet (see
+        # PendingTransfer's docstring in config.py) — swap the player in
+        # place in whichever list(s) held the outgoing player, so squad
+        # size/formation/captaincy slots stay exactly as they were.
+        for pt in config.pending_transfers:
+            if pt.player_out not in current_squad:
+                flags.append(
+                    f"pending_transfers: player {pt.player_out} not found in the current squad — "
+                    "already applied, or the API has caught up; safe to remove from config."
+                )
+                continue
+            current_squad = [pt.player_in if pid == pt.player_out else pid for pid in current_squad]
+            starting_xi = [pt.player_in if pid == pt.player_out else pid for pid in starting_xi]
+            bench = [pt.player_in if pid == pt.player_out else pid for pid in bench]
+            if captain_id == pt.player_out:
+                captain_id = pt.player_in
+            if vice_captain_id == pt.player_out:
+                vice_captain_id = pt.player_in
+
     chips_used_rows = repository.get_chips_used(conn, team_id)
     chips_used = [{"name": r["chip_name"], "event": r["event"]} for r in chips_used_rows]
     used_names = {r["chip_name"] for r in chips_used_rows}

@@ -86,10 +86,17 @@ def test_last_season_defcon_prior_blends_in(conn):
     # should show up as a decent DEFCON bet, not zero — this is exactly the
     # Elliot-Anderson-style case the old (unblended) implementation couldn't
     # represent at all before a ball was kicked this season.
+    #
+    # A season AVERAGE sitting exactly at the threshold must NOT claim 1.0
+    # (100%) — that would assert the player cleared the bar in literally
+    # every match, which an average alone can't prove (caught via a real
+    # Ampadu example: his 2025/26 average was exactly at the MID threshold,
+    # and the old formula displayed that as a 100% "hit-rate"). Capped at
+    # 0.75 for exactly this reason — see _defcon_hit_rate's docstring.
     last_season_row = {"minutes": 3420, "defensive_contribution": 380}  # 10.0 DC/90 vs a DEF threshold of 10
-    assert _defcon_hit_rate(conn, 1, "DEF", last_season_row, WEIGHTS) == 1.0
+    assert abs(_defcon_hit_rate(conn, 1, "DEF", last_season_row, WEIGHTS) - 0.75) < 1e-9
 
     # A weaker last-season record (half the threshold on average) should
-    # proxy to roughly half, capped sensibly, not 0 and not 1.
+    # proxy to well below the strong case above, not 0.
     last_season_row_weak = {"minutes": 3420, "defensive_contribution": 190}  # 5.0 DC/90 vs threshold 10
-    assert abs(_defcon_hit_rate(conn, 1, "DEF", last_season_row_weak, WEIGHTS) - 0.5) < 1e-9
+    assert abs(_defcon_hit_rate(conn, 1, "DEF", last_season_row_weak, WEIGHTS) - 0.375) < 1e-9

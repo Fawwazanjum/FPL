@@ -40,6 +40,11 @@ class UnderstatConfig(BaseModel):
     enabled: bool = True
 
 
+class PendingTransfer(BaseModel):
+    player_out: int
+    player_in: int
+
+
 class ChipsConfig(BaseModel):
     # Wildcard: only recommended when BOTH the value gap and data-maturity
     # gates clear — a large gap computed from too few real gameweeks is not
@@ -73,6 +78,16 @@ class AppConfig(BaseModel):
     understat: UnderstatConfig = Field(default_factory=UnderstatConfig)
     chips: ChipsConfig = Field(default_factory=ChipsConfig)
     purchase_price_overrides: dict[int, float] = Field(default_factory=dict)
+    # FPL's own API only exposes locked-in picks and the transfers ledger
+    # AFTER a gameweek's deadline passes — a transfer made this week for next
+    # week's deadline is invisible to both endpoints until then. Declare it
+    # here and squad_state.py applies it on top of whatever picks the API
+    # currently reports, so the report doesn't silently go stale between a
+    # real transfer and the deadline. Clear this list out once the gameweek
+    # rolls over and the API catches up on its own — it's a manual bridge,
+    # not a permanent record (the transfer already happened for real; this
+    # config isn't what makes it happen).
+    pending_transfers: list[PendingTransfer] = Field(default_factory=list)
     news_overrides_path: Path = Path("./news_overrides.yaml")
     log_level: str = "INFO"
 

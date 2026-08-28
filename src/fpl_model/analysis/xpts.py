@@ -176,7 +176,14 @@ def _defcon_hit_rate(
         and last_season_row["defensive_contribution"] is not None
     ):
         last_season_dc_per90 = last_season_row["defensive_contribution"] / (last_season_row["minutes"] / 90)
-        last_rate = min(1.0, last_season_dc_per90 / threshold)
+        ratio = last_season_dc_per90 / threshold
+        # BUG FIX: this used to cap at 1.0, which let a season AVERAGE sitting
+        # exactly at the threshold claim a 100% "hit rate" — caught by the
+        # user (an Ampadu example: 12.0 DC/90 average vs a 12 threshold isn't
+        # proof he cleared the bar in literally every match, and 100% overtly
+        # claimed exactly that). Capped well short of full certainty — this is
+        # still only a proxy from a season total, not a measured frequency.
+        last_rate = min(0.75, ratio * 0.75)
     else:
         last_rate = 0.0
 
@@ -432,7 +439,12 @@ def compute_player_xpts_gw(
     if attacking_pts_full90 > 1.0:
         reasoning_parts.append(f"strong attacking rate ({attacking_rate:.2f} pts/90)")
     if defcon_pts > 0.3:
-        reasoning_parts.append(f"high DEFCON hit-rate ({defcon_rate:.0%})")
+        # "rate" not "hit-rate" deliberately — this is a blend of a measured
+        # this-season frequency AND a season-average-vs-threshold proxy for
+        # any last-season component (see _defcon_hit_rate), and calling a
+        # blend of those two different things a "hit-rate" overclaims
+        # precision on the proxy half.
+        reasoning_parts.append(f"strong DEFCON rate ({defcon_rate:.0%})")
     role_shift = _detect_role_shift(conn, player_id, position, scoring)
     if role_shift:
         reasoning_parts.append(role_shift)

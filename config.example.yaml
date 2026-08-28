@@ -46,5 +46,14 @@ chips:
 # purchase_price_overrides:
 #   12345: 5.5
 
+# Optional: a transfer you've made on the real FPL site for the upcoming
+# deadline that the API hasn't surfaced yet (it only exposes locked-in picks
+# and the transfers ledger AFTER a deadline passes, not live). Remove the
+# entry once that gameweek's deadline has passed and rerun — the API will
+# have caught up by then, and pending_transfers stops being needed for it.
+# pending_transfers:
+#   - player_out: 372
+#     player_in: 86
+
 news_overrides_path: ./news_overrides.yaml
 log_level: INFO
