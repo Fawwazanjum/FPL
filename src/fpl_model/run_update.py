@@ -87,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     report.analysis = build_analysis_section(
         conn, form_results, xpts_results, xpts_horizon, team_strength, value_results,
         config.differential_ownership_threshold,
+        squad_state.upcoming_gameweek, config.xpts_horizon_gws,
     )
 
     from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION

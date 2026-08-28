@@ -60,6 +60,14 @@ class PlayerFormOut(BaseModel):
     used_position_fallback: bool
 
 
+class FixtureRunEntryOut(BaseModel):
+    gameweek: int
+    opponent_team_id: int
+    opponent_name: str
+    is_home: bool
+    difficulty: int | None
+
+
 class PlayerXptsOut(BaseModel):
     player_id: int
     web_name: str
@@ -70,6 +78,9 @@ class PlayerXptsOut(BaseModel):
     is_home: bool | None
     p_full_involvement: float
     reasoning: str
+    fixture_run: list[FixtureRunEntryOut] = []
+    transfers_in_event: int = 0
+    transfers_out_event: int = 0
 
 
 class TeamStrengthOut(BaseModel):

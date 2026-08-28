@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS player_history_past (
     assists INTEGER,
     clean_sheets INTEGER,
     bps INTEGER,
+    expected_goals REAL,
+    expected_assists REAL,
+    defensive_contribution INTEGER,
     PRIMARY KEY (player_id, season_name)
 );
 

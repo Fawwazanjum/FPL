@@ -40,6 +40,19 @@ class TeamStrengthResult:
     defense_overperformance: float
     attack_index: float
     defense_index: float
+    # Venue-specific strength, sourced from FPL's own strength_attack_home/away
+    # and strength_defence_home/away ratings (ingested every run into
+    # teams_snapshots but previously unused). Unlike attack_index/defense_index
+    # above — which are shrunk z-scores of THIS season's actual xG/goals and so
+    # start near-zero in a new season — these are FPL's own curated ratings and
+    # carry signal from day one, which is exactly what's missing early on. Kept
+    # as separate fields rather than merged into attack_index/defense_index so
+    # xpts.py can blend them in with an explicit, tunable weight per fixture
+    # (home strength when the team is at home, away strength when it isn't).
+    attack_index_home: float = 0.0
+    attack_index_away: float = 0.0
+    defense_index_home: float = 0.0
+    defense_index_away: float = 0.0
 
 
 def _actual_goals_by_team(conn: sqlite3.Connection) -> tuple[dict[int, int], dict[int, int], dict[int, int]]:
@@ -84,15 +97,33 @@ def _zscores(values: dict[int, float]) -> dict[int, float]:
     return {k: (v - mean) / stdev for k, v in values.items()}
 
 
+def _venue_strength_by_team(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
+    return {row["team_id"]: row for row in repository.get_latest_team_snapshots(conn)}
+
+
 def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthResult]:
     goals_for, goals_against, games_played = _actual_goals_by_team(conn)
     attack_xg, defense_xgc = _attack_xg_and_defense_xgc_by_team(conn)
     team_ids = repository.get_all_team_ids(conn)
+    venue_strength = _venue_strength_by_team(conn)
 
     attack_index_raw = {tid: attack_xg.get(tid, 0.0) for tid in team_ids}
     defense_index_raw = {tid: -defense_xgc.get(tid, 0.0) for tid in team_ids}
     attack_z = _zscores(attack_index_raw)
     defense_z = _zscores(defense_index_raw)
+
+    # FPL's own home/away ratings, z-scored the same way as the xG-based
+    # indices above so they're on a comparable scale for xpts.py to blend.
+    # These need no in-season shrinkage — they're not derived from this
+    # season's (thin, early) sample, they're FPL's pre-existing rating.
+    attack_home_raw = {tid: (venue_strength[tid]["strength_attack_home"] or 0) for tid in team_ids if tid in venue_strength}
+    attack_away_raw = {tid: (venue_strength[tid]["strength_attack_away"] or 0) for tid in team_ids if tid in venue_strength}
+    defense_home_raw = {tid: -(venue_strength[tid]["strength_defence_home"] or 0) for tid in team_ids if tid in venue_strength}
+    defense_away_raw = {tid: -(venue_strength[tid]["strength_defence_away"] or 0) for tid in team_ids if tid in venue_strength}
+    attack_home_z = _zscores(attack_home_raw)
+    attack_away_z = _zscores(attack_away_raw)
+    defense_home_z = _zscores(defense_home_raw)
+    defense_away_z = _zscores(defense_away_raw)
 
     results: dict[int, TeamStrengthResult] = {}
     for tid in team_ids:
@@ -113,5 +144,9 @@ def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthRes
             defense_overperformance=xgc - ga,
             attack_index=attack_z.get(tid, 0.0) * shrink,
             defense_index=defense_z.get(tid, 0.0) * shrink,
+            attack_index_home=attack_home_z.get(tid, 0.0),
+            attack_index_away=attack_away_z.get(tid, 0.0),
+            defense_index_home=defense_home_z.get(tid, 0.0),
+            defense_index_away=defense_away_z.get(tid, 0.0),
         )
     return results

@@ -28,9 +28,34 @@ CLEAN_SHEET_BASE_RATE = 0.30
 CLEAN_SHEET_INDEX_SENSITIVITY = 0.12
 CLEAN_SHEET_MIN, CLEAN_SHEET_MAX = 0.03, 0.75
 CONCEDED_INDEX_SENSITIVITY = 0.15
+# Weight given to FPL's own home/away strength ratings (team_strength.py's
+# attack/defense_index_home/away) relative to this season's live xG-based
+# index when scoring a specific fixture. Kept below 1.0 deliberately: the
+# live index is the more direct signal once there's enough of a sample, this
+# is a venue-context adjustment on top of it, not a replacement for it.
+HOME_AWAY_INDEX_WEIGHT = 0.4
+# Attacking-side opponent/venue adjustment (see memory: fpl-model-project —
+# previously attacking_rate had NO opponent adjustment at all, only the
+# defensive side did). Two effects, both using the same real underlying
+# attack/defense indices as the clean-sheet calc above, not a flat
+# home-good/away-bad or "big club" label:
+#   - opponent's defense: weaker opponent defense -> higher expected output
+#   - own team's attacking form: our team creating well right now -> a bit
+#     more expected output for this player specifically
+# The own-team-form term is deliberately weaker than the opponent term: a
+# player's own attacking_rate already partly reflects their team's attacking
+# context over the games it was measured on, so weighting it too heavily here
+# risks double-counting the same signal twice.
+ATTACK_OPPONENT_DEFENSE_SENSITIVITY = 0.15
+ATTACK_OWN_TEAM_FORM_SENSITIVITY = 0.08
+ATTACK_MULTIPLIER_MIN, ATTACK_MULTIPLIER_MAX = 0.5, 1.8
 MIN_MINUTES_FACTOR = 0.15
 SEASON_GAMES = 38
 DOUBTFUL_DEFAULT_CHANCE = 0.5
+# Below this, net gameweek transfer activity isn't worth mentioning — informational
+# only (see memory: fpl-model-project), it never touches `total`, so this only
+# affects whether a reasoning line gets printed, not any score.
+TRANSFER_MOMENTUM_NOTABLE_THRESHOLD = 50_000
 # A manager quote/observed tactical change is a real, immediate signal (see
 # memory: fpl-model-project, the Guéhi discussion) — modest by design, this
 # nudges the attacking rate rather than overriding the statistical estimate.
@@ -56,15 +81,29 @@ class XptsBreakdown:
     card_penalty: float
     total: float
     reasoning: str
+    transfers_in_event: int
+    transfers_out_event: int
 
 
 def _attacking_rate_per90(
     conn: sqlite3.Connection, player_id: int, position: str, scoring: ScoringRules, weights: FormWeights, last_season_row
 ) -> tuple[float, int]:
     if last_season_row is not None and (last_season_row["minutes"] or 0) > 0:
-        last_rate = scoring.attacking_points(
-            position, last_season_row["goals_scored"] or 0, last_season_row["assists"] or 0
-        ) / (last_season_row["minutes"] / 90)
+        # Prefer underlying xG/xA over actual goals/assists for the last-season
+        # prior — actual output is already the converted (lucky-or-unlucky)
+        # result; using it as the anchor a new season regresses toward means a
+        # player who overperformed last season starts overrated, and one who
+        # created well but finished poorly starts underrated. xG/xA is the
+        # more mean-reverting signal, which is the whole point of a prior.
+        # Falls back to actual goals/assists only for a DB that predates this
+        # column (pre-migration player_history_past rows with NULLs there).
+        if last_season_row["expected_goals"] is not None or last_season_row["expected_assists"] is not None:
+            last_xg = last_season_row["expected_goals"] or 0.0
+            last_xa = last_season_row["expected_assists"] or 0.0
+        else:
+            last_xg = last_season_row["goals_scored"] or 0
+            last_xa = last_season_row["assists"] or 0
+        last_rate = scoring.attacking_points(position, last_xg, last_xa) / (last_season_row["minutes"] / 90)
     else:
         last_rate = 0.0
 
@@ -111,16 +150,49 @@ def _bonus_rate_per90(conn: sqlite3.Connection, player_id: int, weights: FormWei
     return blend.blended_rate
 
 
-def _defcon_hit_rate(conn: sqlite3.Connection, player_id: int, position: str) -> float:
+def _defcon_hit_rate(
+    conn: sqlite3.Connection, player_id: int, position: str, last_season_row, weights: FormWeights
+) -> float:
+    """Blended DEFCON hit-rate: last season / this season / recent, same
+    purple-patch discipline as attacking and bonus rate. Previously this was
+    computed from THIS season alone with no prior at all — after 1 gameweek
+    every player's rate was a binary 0% or 100%, the noisiest number in the
+    whole model for a stat (see memory: fpl-model-project) that's actually one
+    of the more year-to-year-consistent signals for the right player archetype
+    (an Elliot Anderson-type). last_season_row only has a SEASON TOTAL for
+    defensive_contribution, not per-game figures, so there's no way to compute
+    a true last-season hit-RATE (the frequency of clearing the bar in a given
+    match) — this proxies it as how close the average game came to the
+    threshold (average DC/90 over threshold, capped at 1.0), which is a real
+    approximation, not a recovered true hit-rate; flagged here so it's not
+    mistaken for one."""
     threshold = DEFCON_THRESHOLD.get(position)
     if not threshold:
         return 0.0
+
+    if (
+        last_season_row is not None
+        and (last_season_row["minutes"] or 0) > 0
+        and last_season_row["defensive_contribution"] is not None
+    ):
+        last_season_dc_per90 = last_season_row["defensive_contribution"] / (last_season_row["minutes"] / 90)
+        last_rate = min(1.0, last_season_dc_per90 / threshold)
+    else:
+        last_rate = 0.0
+
     all_rows = repository.get_player_gw_history_all(conn, player_id)
     played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
+    n = len(played_rows)
     if not played_rows:
-        return 0.0
-    hits = sum(1 for r in played_rows if (r["defensive_contribution"] or 0) >= threshold)
-    return hits / len(played_rows)
+        season_rate = 0.0
+        recent_rate = 0.0
+    else:
+        season_rate = sum(1 for r in played_rows if (r["defensive_contribution"] or 0) >= threshold) / len(played_rows)
+        recent_rows = played_rows[-6:]
+        recent_rate = sum(1 for r in recent_rows if (r["defensive_contribution"] or 0) >= threshold) / len(recent_rows)
+
+    blend = blend_rate(last_rate, season_rate, recent_rate, n, weights)
+    return blend.blended_rate
 
 
 ROLE_SHIFT_MIN_GAMES = 4
@@ -243,7 +315,7 @@ def compute_player_xpts_gw(
     last_season_row = repository.get_player_history_past(conn, player_id, LAST_SEASON_LABEL)
     attacking_rate, n = _attacking_rate_per90(conn, player_id, position, scoring, weights, last_season_row)
     bonus_rate = _bonus_rate_per90(conn, player_id, weights, last_season_row, n)
-    defcon_rate = _defcon_hit_rate(conn, player_id, position)
+    defcon_rate = _defcon_hit_rate(conn, player_id, position, last_season_row, weights)
     card_rate = _card_rate_per90(conn, player_id, scoring)
 
     news_reasoning: list[str] = []
@@ -280,6 +352,7 @@ def compute_player_xpts_gw(
     is_home: bool | None = None
     expected_clean_sheets = 0.0  # sum of per-fixture clean-sheet probabilities
     conceded_penalty = 0.0
+    attacking_pts_full90 = 0.0  # sum of per-fixture opponent/venue-adjusted attacking output
     reasoning_parts = []
     fixture_descriptions = []
 
@@ -293,11 +366,44 @@ def compute_player_xpts_gw(
                 is_home, opponent_id = fx_is_home, fx_opponent
             opp_strength = team_strength.get(fx_opponent)
             opp_attack_index = opp_strength.attack_index if opp_strength else 0.0
-            cs_prob = _clean_sheet_probability(own_strength.defense_index, opp_attack_index)
+            # Venue-adjusted terms: our defense uses its home rating when we're
+            # at home (away rating otherwise); the opponent's attack uses the
+            # opposite venue from theirs, since they're playing the away leg
+            # of this fixture when we're at home, and vice versa.
+            own_defense_venue = own_strength.defense_index_home if fx_is_home else own_strength.defense_index_away
+            opp_attack_venue = opp_strength.attack_index_away if (opp_strength and fx_is_home) else (
+                opp_strength.attack_index_home if opp_strength else 0.0
+            )
+            own_defense_adj = own_strength.defense_index + HOME_AWAY_INDEX_WEIGHT * own_defense_venue
+            opp_attack_adj = opp_attack_index + HOME_AWAY_INDEX_WEIGHT * opp_attack_venue
+            cs_prob = _clean_sheet_probability(own_defense_adj, opp_attack_adj)
             expected_clean_sheets += cs_prob
-            expected_conceded = _expected_conceded_this_fixture(own_strength, opp_attack_index, team_games)
+            expected_conceded = _expected_conceded_this_fixture(own_strength, opp_attack_adj, team_games)
             conceded_penalty += scoring.goals_conceded.get(position, 0) * (expected_conceded / 2)
-            fixture_descriptions.append(f"vs team {fx_opponent} ({'H' if fx_is_home else 'A'}, CS prob {cs_prob:.0%})")
+
+            # Attacking side: same underlying indices, mirrored — a player's
+            # expected attacking output rises against a weaker opponent
+            # defense and when their own team is creating well right now, both
+            # venue-adjusted the same way as above. Real underlying numbers per
+            # team/fixture, not a categorical "away form" or "big club" label.
+            opp_defense_index = opp_strength.defense_index if opp_strength else 0.0
+            opp_defense_venue = opp_strength.defense_index_away if (opp_strength and fx_is_home) else (
+                opp_strength.defense_index_home if opp_strength else 0.0
+            )
+            opp_defense_adj = opp_defense_index + HOME_AWAY_INDEX_WEIGHT * opp_defense_venue
+            own_attack_venue = own_strength.attack_index_home if fx_is_home else own_strength.attack_index_away
+            own_attack_adj = own_strength.attack_index + HOME_AWAY_INDEX_WEIGHT * own_attack_venue
+            attack_multiplier = (
+                1.0
+                - ATTACK_OPPONENT_DEFENSE_SENSITIVITY * opp_defense_adj
+                + ATTACK_OWN_TEAM_FORM_SENSITIVITY * own_attack_adj
+            )
+            attack_multiplier = max(ATTACK_MULTIPLIER_MIN, min(ATTACK_MULTIPLIER_MAX, attack_multiplier))
+            attacking_pts_full90 += attacking_rate * attack_multiplier
+
+            fixture_descriptions.append(
+                f"vs team {fx_opponent} ({'H' if fx_is_home else 'A'}, CS prob {cs_prob:.0%}, attack x{attack_multiplier:.2f})"
+            )
         if num_fixtures > 1:
             reasoning_parts.append(f"DOUBLE GAMEWEEK: {'; '.join(fixture_descriptions)}")
         else:
@@ -308,10 +414,14 @@ def compute_player_xpts_gw(
     # Appearance-scaled components multiply by num_fixtures (0 for a blank
     # gameweek correctly zeroes everything; 2 for a double gameweek assumes
     # the player features in both, weighted by the same involvement estimate).
+    # attacking_pts_full90 is NOT included here — it's already accumulated
+    # per-fixture above (with its own per-fixture opponent adjustment), which
+    # both handles blanks/doubles correctly and, as a bonus, means a double
+    # gameweek now properly uses two different opponent adjustments instead of
+    # doubling one flat rate.
     appearance_pts = num_fixtures * p_available * (minutes_factor * scoring.long_play + (1 - minutes_factor) * scoring.short_play)
     clean_sheet_pts = scoring.clean_sheets.get(position, 0) * expected_clean_sheets
     defcon_pts = scoring.defensive_contribution_points.get(position, 0) * defcon_rate * num_fixtures
-    attacking_pts_full90 = attacking_rate * num_fixtures
     bonus_rate_total = bonus_rate * num_fixtures
     card_rate_total = card_rate * num_fixtures
 
@@ -328,6 +438,15 @@ def compute_player_xpts_gw(
         reasoning_parts.append(role_shift)
     if p_full < 0.5:
         reasoning_parts.append(f"rotation/fitness risk (minutes-share {minutes_factor:.0%}, n={n_team_games} GW)")
+
+    transfers_in_event = snap["transfers_in_event"] or 0
+    transfers_out_event = snap["transfers_out_event"] or 0
+    net_transfers = transfers_in_event - transfers_out_event
+    if abs(net_transfers) >= TRANSFER_MOMENTUM_NOTABLE_THRESHOLD:
+        direction = "IN" if net_transfers > 0 else "OUT"
+        reasoning_parts.append(
+            f"transfer momentum: {abs(net_transfers):,} net {direction} this GW (informational only — not a scoring input)"
+        )
     reasoning_parts.extend(news_reasoning)
 
     return XptsBreakdown(
@@ -348,6 +467,8 @@ def compute_player_xpts_gw(
         card_penalty=p_full * card_rate_total,
         total=total,
         reasoning="; ".join(reasoning_parts),
+        transfers_in_event=transfers_in_event,
+        transfers_out_event=transfers_out_event,
     )
 
 

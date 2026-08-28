@@ -19,6 +19,7 @@ from fpl_model.report.schema import (
     AnalysisSection,
     ChipAdviceBundleOut,
     ChipAdviceOut,
+    FixtureRunEntryOut,
     LineupOut,
     LineupPlayerOut,
     NewsOverrideOut,
@@ -97,14 +98,40 @@ def build_analysis_section(
     team_strength: dict[int, TeamStrengthResult],
     value_results: dict[int, ValueResult],
     differential_ownership_threshold: float,
+    from_gw: int,
+    fixture_run_horizon: int,
 ) -> AnalysisSection:
+    from fpl_model.analysis.fixtures import fixture_run_for_team
     from fpl_model.analysis.value import top_differentials, top_template_picks
     from fpl_model.constants import POSITIONS
 
     web_names: dict[int, str] = {}
+    team_ids_by_player: dict[int, int] = {}
     for pid in set(form_results) | set(xpts_results) | set(value_results):
         snap = repository.get_latest_snapshot_for_player(conn, pid)
         web_names[pid] = snap["web_name"] if snap else str(pid)
+        team_ids_by_player[pid] = snap["team_id"] if snap else None
+
+    team_names = {row["team_id"]: row["name"] for row in repository.get_latest_team_snapshots(conn)}
+
+    fixture_run_cache: dict[int, list[dict]] = {}
+
+    def _fixture_run_out(pid: int) -> list[FixtureRunEntryOut]:
+        team_id = team_ids_by_player.get(pid)
+        if team_id is None:
+            return []
+        if team_id not in fixture_run_cache:
+            fixture_run_cache[team_id] = fixture_run_for_team(conn, team_id, from_gw, fixture_run_horizon)
+        return [
+            FixtureRunEntryOut(
+                gameweek=fx["gameweek"],
+                opponent_team_id=fx["opponent_team_id"],
+                opponent_name=team_names.get(fx["opponent_team_id"], str(fx["opponent_team_id"])),
+                is_home=fx["is_home"],
+                difficulty=fx["difficulty"],
+            )
+            for fx in fixture_run_cache[team_id]
+        ]
 
     form_out = {
         pid: PlayerFormOut(
@@ -132,11 +159,13 @@ def build_analysis_section(
             is_home=xr.is_home,
             p_full_involvement=round(xr.p_full_involvement, 3),
             reasoning=xr.reasoning,
+            fixture_run=_fixture_run_out(pid),
+            transfers_in_event=xr.transfers_in_event,
+            transfers_out_event=xr.transfers_out_event,
         )
         for pid, xr in xpts_results.items()
     }
 
-    team_names = {row["team_id"]: row["name"] for row in repository.get_latest_team_snapshots(conn)}
     team_strength_out = [
         TeamStrengthOut(
             team_id=ts.team_id,

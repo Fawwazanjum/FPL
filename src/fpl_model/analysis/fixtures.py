@@ -53,3 +53,25 @@ def fixture_difficulty_for_horizon(conn: sqlite3.Connection, team_id: int, from_
             if diff is not None:
                 difficulties.append(diff)
     return difficulties
+
+
+def fixture_run_for_team(conn: sqlite3.Connection, team_id: int, from_gw: int, horizon: int) -> list[dict]:
+    """The actual upcoming fixture list for a team, one entry per fixture (0, 1,
+    or 2+ per gameweek for blank/double), each with FPL's own 1-5 difficulty
+    rating for that leg. This exists so a 'good run coming up' claim is a
+    concrete, checkable list rather than buried inside one aggregate xPts
+    number — the horizon total already accounts for these fixtures gameweek by
+    gameweek (see xpts.compute_horizon_xpts), this just makes that visible."""
+    run: list[dict] = []
+    for gw in range(from_gw, from_gw + horizon):
+        for fx in repository.get_fixtures_for_team_gw(conn, team_id, gw):
+            is_home = fx["team_h"] == team_id
+            opponent_id = fx["team_a"] if is_home else fx["team_h"]
+            difficulty = fx["team_h_difficulty"] if is_home else fx["team_a_difficulty"]
+            run.append({
+                "gameweek": gw,
+                "opponent_team_id": opponent_id,
+                "is_home": is_home,
+                "difficulty": difficulty,
+            })
+    return run

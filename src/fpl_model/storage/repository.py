@@ -51,7 +51,10 @@ def upsert_player_gw_history(conn: sqlite3.Connection, rows: list[dict[str, Any]
 
 
 def upsert_player_history_past(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
-    cols = ["player_id", "season_name", "total_points", "minutes", "goals_scored", "assists", "clean_sheets", "bps"]
+    cols = [
+        "player_id", "season_name", "total_points", "minutes", "goals_scored", "assists", "clean_sheets", "bps",
+        "expected_goals", "expected_assists", "defensive_contribution",
+    ]
     _upsert_many(conn, "player_history_past", cols, rows)
 
 

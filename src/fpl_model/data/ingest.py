@@ -99,15 +99,17 @@ def run_full_refresh(
     if gw is not None:
         squad_player_ids = [row["player_id"] for row in repository.get_squad_for_gw(conn, config.team_id, gw)]
         scoped_player_ids = select_scoped_players(conn, squad_player_ids)
-        log.info("Fetching element-summary for %d scoped players (squad + top-owned + top-form per position)", len(scoped_player_ids))
+        log.info("Fetching element-summary for %d players (full league pool)", len(scoped_player_ids))
         _ingest_element_summaries(conn, client, list(scoped_player_ids), report)
 
         if not skip_understat and config.understat.enabled:
-            # Scoped to the user's own 15 squad players only (not the full
-            # ~100 element-summary pool) — Understat is a scraper, not an
-            # official API, so keeping request volume low reduces the chance
-            # of it getting itself rate-limited/blocked, and this is the
-            # subset that actually matters most to the user.
+            # Deliberately still scoped to the user's own 15 squad players,
+            # NOT the full league pool now used for element-summary above.
+            # Understat is an unofficial scraper, not FPL's own API — the
+            # request-volume caution that no longer applies to element-summary
+            # (measured safe at full-league scale) still applies here, since
+            # getting Understat itself rate-limited/blocked is a real risk a
+            # different site's tolerance, not ours, controls.
             _ingest_understat(conn, squad_player_ids, report)
 
     return report
@@ -304,6 +306,9 @@ def _ingest_element_summaries(
                 "assists": p.get("assists"),
                 "clean_sheets": p.get("clean_sheets"),
                 "bps": p.get("bps"),
+                "expected_goals": _to_float(p.get("expected_goals")),
+                "expected_assists": _to_float(p.get("expected_assists")),
+                "defensive_contribution": p.get("defensive_contribution"),
             }
             for p in summary.get("history_past", [])
             if p.get("season_name") == LAST_SEASON_LABEL
