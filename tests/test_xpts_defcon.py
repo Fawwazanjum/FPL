@@ -2,9 +2,16 @@ import math
 
 from fpl_model.analysis.xpts import _defcon_rate_per90, _poisson_p_at_least
 from fpl_model.config import FormWeights
+from fpl_model.constants import RECENT_SEASON_LABELS
 from fpl_model.storage import repository
 
 WEIGHTS = FormWeights()
+
+
+def _history_past_seasons(row):
+    """A single (most-recent-season) history_past_seasons dict, in the shape
+    _defcon_rate_per90 now expects — keyed by season label, not a bare row."""
+    return {RECENT_SEASON_LABELS[0]: row} if row is not None else {}
 
 
 def _gw_row(player_id, gw, minutes, defensive_contribution):
@@ -28,7 +35,7 @@ def _gw_row(player_id, gw, minutes, defensive_contribution):
 
 
 def test_no_history_gives_zero_rate(conn):
-    rate, n = _defcon_rate_per90(conn, 1, None, WEIGHTS)
+    rate, n = _defcon_rate_per90(conn, 1, _history_past_seasons(None), WEIGHTS)
     assert rate == 0.0
     assert n == 0
 
@@ -39,7 +46,7 @@ def test_this_season_rate_reflects_actual_actions_per_90(conn):
     # 0, not trusted outright — same purple-patch discipline as attacking rate.
     rows = [_gw_row(1, gw, 90, defensive_contribution=9) for gw in range(1, 4)]
     repository.upsert_player_gw_history(conn, rows)
-    rate, n = _defcon_rate_per90(conn, 1, None, WEIGHTS)
+    rate, n = _defcon_rate_per90(conn, 1, _history_past_seasons(None), WEIGHTS)
     assert n == 3
     assert 0.0 < rate < 9.0  # shrunk below face value, not zero and not untouched
 
@@ -49,8 +56,8 @@ def test_last_season_prior_carries_at_zero_games_this_season(conn):
     # should show that rate directly (n=0 -> w_last=1.0), not zero — this is
     # the Elliot-Anderson-style case: judge a known defensive workhorse by
     # their track record before a ball's been kicked this season.
-    last_season_row = {"minutes": 3420, "defensive_contribution": 380}  # 10.0 DC/90
-    rate, n = _defcon_rate_per90(conn, 1, last_season_row, WEIGHTS)
+    seasons = _history_past_seasons({"minutes": 3420, "defensive_contribution": 380})  # 10.0 DC/90
+    rate, n = _defcon_rate_per90(conn, 1, seasons, WEIGHTS)
     assert n == 0
     assert abs(rate - 10.0) < 1e-9
 
@@ -59,13 +66,31 @@ def test_two_players_compare_directly_on_the_raw_rate(conn):
     # This is the actual point of the metric: given two players' history, the
     # returned numbers should be directly, transparently comparable — no
     # threshold, no hidden "hit-rate" abstraction in between.
-    strong = {"minutes": 3420, "defensive_contribution": 456}  # 12.0 DC/90
-    weak = {"minutes": 3420, "defensive_contribution": 190}  # 5.0 DC/90
+    strong = _history_past_seasons({"minutes": 3420, "defensive_contribution": 456})  # 12.0 DC/90
+    weak = _history_past_seasons({"minutes": 3420, "defensive_contribution": 190})  # 5.0 DC/90
     strong_rate, _ = _defcon_rate_per90(conn, 1, strong, WEIGHTS)
     weak_rate, _ = _defcon_rate_per90(conn, 2, weak, WEIGHTS)
     assert strong_rate > weak_rate
     assert abs(strong_rate - 12.0) < 1e-9
     assert abs(weak_rate - 5.0) < 1e-9
+
+
+def test_pre_defcon_season_is_excluded_not_treated_as_zero(conn):
+    # A 2023/24 row with real minutes but defensive_contribution=0 reflects
+    # the stat not being tracked that season (verified against real ingested
+    # data — see constants.DEFCON_TRACKED_SEASON_LABELS), not a player who
+    # genuinely made zero defensive actions all season. It must be excluded
+    # entirely, not blended in as a real (and misleadingly low) data point.
+    from fpl_model.constants import RECENT_SEASON_LABELS
+
+    seasons = {
+        RECENT_SEASON_LABELS[1]: {"minutes": 3000, "defensive_contribution": 300},  # 2024/25, tracked: 9.0 DC/90
+        RECENT_SEASON_LABELS[2]: {"minutes": 3000, "defensive_contribution": 0},  # 2023/24, pre-DEFCON
+    }
+    rate, _ = _defcon_rate_per90(conn, 1, seasons, WEIGHTS)
+    # Only the 2024/25 season should count -> the full 9.0 DC/90 at full
+    # weight, not diluted toward 0 by the untracked season.
+    assert abs(rate - 9.0) < 1e-9
 
 
 # --- _poisson_p_at_least: converts a single per-90 rate into P(hit the

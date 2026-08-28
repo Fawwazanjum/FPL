@@ -254,7 +254,7 @@ def _ingest_transfers(conn: sqlite3.Connection, team_id: int, transfers: list[di
 def _ingest_element_summaries(
     conn: sqlite3.Connection, client: FplClient, player_ids: list[int], report: IngestReport
 ) -> None:
-    from fpl_model.constants import LAST_SEASON_LABEL
+    from fpl_model.constants import RECENT_SEASON_LABELS
 
     for player_id in player_ids:
         try:
@@ -309,9 +309,10 @@ def _ingest_element_summaries(
                 "expected_goals": _to_float(p.get("expected_goals")),
                 "expected_assists": _to_float(p.get("expected_assists")),
                 "defensive_contribution": p.get("defensive_contribution"),
+                "bonus": p.get("bonus"),
             }
             for p in summary.get("history_past", [])
-            if p.get("season_name") == LAST_SEASON_LABEL
+            if p.get("season_name") in RECENT_SEASON_LABELS
         ]
         repository.upsert_player_history_past(conn, past_rows)
 

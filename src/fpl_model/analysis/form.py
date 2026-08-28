@@ -3,9 +3,9 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from fpl_model.analysis.rate_blend import shrink_toward_expected, blend_rate
+from fpl_model.analysis.rate_blend import multi_season_prior_rate, shrink_toward_expected, blend_rate
 from fpl_model.config import FormWeights
-from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION, LAST_SEASON_LABEL
+from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION, RECENT_SEASON_LABELS
 from fpl_model.data.scoring_rules import ScoringRules
 from fpl_model.storage import repository
 
@@ -32,10 +32,8 @@ def _rate_per90(rows: list[sqlite3.Row], value_key: str) -> tuple[float, float]:
 
 
 def _last_season_rate(conn: sqlite3.Connection, player_id: int) -> float | None:
-    row = repository.get_player_history_past(conn, player_id, LAST_SEASON_LABEL)
-    if row is None or not row["minutes"]:
-        return None
-    return row["total_points"] / (row["minutes"] / 90)
+    history_past_seasons = repository.get_player_history_past_seasons(conn, player_id, RECENT_SEASON_LABELS)
+    return multi_season_prior_rate(history_past_seasons, lambda row: row["total_points"] / (row["minutes"] / 90))
 
 
 def _position_average_last_season(

@@ -53,7 +53,7 @@ def upsert_player_gw_history(conn: sqlite3.Connection, rows: list[dict[str, Any]
 def upsert_player_history_past(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     cols = [
         "player_id", "season_name", "total_points", "minutes", "goals_scored", "assists", "clean_sheets", "bps",
-        "expected_goals", "expected_assists", "defensive_contribution",
+        "expected_goals", "expected_assists", "defensive_contribution", "bonus",
     ]
     _upsert_many(conn, "player_history_past", cols, rows)
 
@@ -200,6 +200,17 @@ def get_player_history_past(conn: sqlite3.Connection, player_id: int, season_nam
         "SELECT * FROM player_history_past WHERE player_id = ? AND season_name = ?",
         (player_id, season_name),
     ).fetchone()
+
+
+def get_player_history_past_seasons(
+    conn: sqlite3.Connection, player_id: int, season_names: tuple[str, ...]
+) -> dict[str, sqlite3.Row]:
+    placeholders = ", ".join("?" for _ in season_names)
+    rows = conn.execute(
+        f"SELECT * FROM player_history_past WHERE player_id = ? AND season_name IN ({placeholders})",
+        (player_id, *season_names),
+    ).fetchall()
+    return {row["season_name"]: row for row in rows}
 
 
 def get_player_recent_gws(conn: sqlite3.Connection, player_id: int, n: int) -> list[sqlite3.Row]:

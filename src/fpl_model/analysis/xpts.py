@@ -17,10 +17,10 @@ import math
 import sqlite3
 from dataclasses import dataclass
 
-from fpl_model.analysis.rate_blend import blend_rate
+from fpl_model.analysis.rate_blend import blend_rate, multi_season_prior_rate
 from fpl_model.analysis.team_strength import TeamStrengthResult
 from fpl_model.config import AppConfig, FormWeights
-from fpl_model.constants import ELEMENT_TYPE_ID_TO_POSITION
+from fpl_model.constants import DEFCON_TRACKED_SEASON_LABELS, ELEMENT_TYPE_ID_TO_POSITION
 from fpl_model.data.scoring_rules import DEFCON_THRESHOLD, ScoringRules
 from fpl_model.report.news_overrides import NewsOverride
 from fpl_model.storage import repository
@@ -87,27 +87,35 @@ class XptsBreakdown:
     transfers_out_event: int
 
 
-def _attacking_rate_per90(
-    conn: sqlite3.Connection, player_id: int, position: str, scoring: ScoringRules, weights: FormWeights, last_season_row
-) -> tuple[float, int]:
-    if last_season_row is not None and (last_season_row["minutes"] or 0) > 0:
-        # Prefer underlying xG/xA over actual goals/assists for the last-season
-        # prior — actual output is already the converted (lucky-or-unlucky)
-        # result; using it as the anchor a new season regresses toward means a
-        # player who overperformed last season starts overrated, and one who
-        # created well but finished poorly starts underrated. xG/xA is the
-        # more mean-reverting signal, which is the whole point of a prior.
-        # Falls back to actual goals/assists only for a DB that predates this
-        # column (pre-migration player_history_past rows with NULLs there).
-        if last_season_row["expected_goals"] is not None or last_season_row["expected_assists"] is not None:
-            last_xg = last_season_row["expected_goals"] or 0.0
-            last_xa = last_season_row["expected_assists"] or 0.0
-        else:
-            last_xg = last_season_row["goals_scored"] or 0
-            last_xa = last_season_row["assists"] or 0
-        last_rate = scoring.attacking_points(position, last_xg, last_xa) / (last_season_row["minutes"] / 90)
+def _attacking_points_rate_for_season(row: sqlite3.Row, position: str, scoring: ScoringRules) -> float:
+    # Prefer underlying xG/xA over actual goals/assists — actual output is
+    # already the converted (lucky-or-unlucky) result; using it as a prior
+    # anchor means a player who overperformed starts overrated, and one who
+    # created well but finished poorly starts underrated. xG/xA is the more
+    # mean-reverting signal, which is the whole point of a prior. Falls back
+    # to actual goals/assists only for a row that predates this column
+    # (pre-migration player_history_past rows with NULLs there).
+    if row["expected_goals"] is not None or row["expected_assists"] is not None:
+        xg = row["expected_goals"] or 0.0
+        xa = row["expected_assists"] or 0.0
     else:
-        last_rate = 0.0
+        xg = row["goals_scored"] or 0
+        xa = row["assists"] or 0
+    return scoring.attacking_points(position, xg, xa) / (row["minutes"] / 90)
+
+
+def _attacking_rate_per90(
+    conn: sqlite3.Connection,
+    player_id: int,
+    position: str,
+    scoring: ScoringRules,
+    weights: FormWeights,
+    history_past_seasons: dict[str, sqlite3.Row],
+) -> tuple[float, int]:
+    last_rate = multi_season_prior_rate(
+        history_past_seasons, lambda row: _attacking_points_rate_for_season(row, position, scoring)
+    )
+    last_rate = last_rate if last_rate is not None else 0.0
 
     snap = repository.get_latest_snapshot_for_player(conn, player_id)
     if snap is not None and (snap["minutes"] or 0) > 0:
@@ -131,11 +139,21 @@ def _attacking_rate_per90(
     return blend.blended_rate, n
 
 
-def _bonus_rate_per90(conn: sqlite3.Connection, player_id: int, weights: FormWeights, last_season_row, n: int) -> float:
-    # player_history_past doesn't store a 'bonus' column (see storage/schema.sql),
-    # so there's no last-season prior for this component — neutral (0) is used,
-    # and the blend schedule already down-weights it once n > 0 anyway.
-    last_rate = 0.0
+def _bonus_rate_per90(
+    conn: sqlite3.Connection,
+    player_id: int,
+    weights: FormWeights,
+    history_past_seasons: dict[str, sqlite3.Row],
+    n: int,
+) -> float:
+    # player_history_past now stores a season-total 'bonus' column (it didn't
+    # for the first version of this fix — caught as a leftover gap, see
+    # memory: fpl-model-project), so this gets the same multi-season prior
+    # treatment as attacking rate instead of defaulting to a neutral 0.
+    last_rate = multi_season_prior_rate(
+        history_past_seasons, lambda row: (row["bonus"] or 0) / (row["minutes"] / 90)
+    )
+    last_rate = last_rate if last_rate is not None else 0.0
 
     all_rows = repository.get_player_gw_history_all(conn, player_id)
     played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
@@ -153,9 +171,12 @@ def _bonus_rate_per90(conn: sqlite3.Connection, player_id: int, weights: FormWei
 
 
 def _defcon_rate_per90(
-    conn: sqlite3.Connection, player_id: int, last_season_row, weights: FormWeights
+    conn: sqlite3.Connection,
+    player_id: int,
+    history_past_seasons: dict[str, sqlite3.Row],
+    weights: FormWeights,
 ) -> tuple[float, int]:
-    """Blended DEFCON actions-per-90, last season / this season / recent —
+    """Blended DEFCON actions-per-90, multi-season prior / this season / recent —
     same purple-patch discipline as attacking rate, and now the SAME KIND of
     quantity throughout the blend (a rate), not a rate-proxy for one leg and
     an actual measured frequency for another. That mixing was the root cause
@@ -167,15 +188,22 @@ def _defcon_rate_per90(
     instead sidesteps that entirely; converting rate -> hit probability
     happens once, in one place (_poisson_p_at_least), from a single clean
     number. This is also the number worth showing directly to compare two
-    players' defensive output — see PlayerXptsOut.defcon_per90."""
-    if (
-        last_season_row is not None
-        and (last_season_row["minutes"] or 0) > 0
-        and last_season_row["defensive_contribution"] is not None
-    ):
-        last_rate = last_season_row["defensive_contribution"] / (last_season_row["minutes"] / 90)
-    else:
-        last_rate = 0.0
+    players' defensive output — see PlayerXptsOut.defcon_per90.
+
+    Deliberately restricted to DEFCON_TRACKED_SEASON_LABELS, not the full
+    multi-season window every other rate here uses — DEFCON is a newer FPL
+    scoring category, and blending in a season before it existed would mean
+    treating "not tracked that year" as "recorded zero defensive actions all
+    season," dragging every veteran's prior down. Verified directly against
+    the data before this shipped, see constants.py for the check."""
+    tracked_seasons = {
+        season: row for season, row in history_past_seasons.items() if season in DEFCON_TRACKED_SEASON_LABELS
+    }
+    last_rate = multi_season_prior_rate(
+        tracked_seasons,
+        lambda row: (row["defensive_contribution"] or 0) / (row["minutes"] / 90),
+    )
+    last_rate = last_rate if last_rate is not None else 0.0
 
     all_rows = repository.get_player_gw_history_all(conn, player_id)
     played_rows = [r for r in all_rows if (r["minutes"] or 0) > 0]
@@ -267,16 +295,50 @@ def _card_rate_per90(conn: sqlite3.Connection, player_id: int, scoring: ScoringR
     return points / (minutes / 90)
 
 
-def _minutes_reliability(conn: sqlite3.Connection, player_id: int, last_season_row, weights: FormWeights) -> tuple[float, int]:
+# Accumulated-booking suspension thresholds -> ban length in matches (FA
+# disciplinary rule for English domestic competitions). Not exposed anywhere
+# in FPL's API — hardcoded the same way DEFCON_THRESHOLD is, for the same
+# reason (documented external rule, not derived data); flagged here so a
+# future rule change is easy to find. The exact cutoff GAMEWEEK each
+# threshold applies by shifts slightly season to season and isn't modeled —
+# this is "you're one booking from a ban," not a per-gameweek probability.
+SUSPENSION_THRESHOLDS = {5: 1, 10: 2, 15: 3}
+
+
+def _suspension_risk_note(conn: sqlite3.Connection, player_id: int) -> str | None:
+    all_rows = repository.get_player_gw_history_all(conn, player_id)
+    total_yellows = sum((r["yellow_cards"] or 0) for r in all_rows)
+    for threshold, ban_matches in SUSPENSION_THRESHOLDS.items():
+        if total_yellows == threshold - 1:
+            return (
+                f"{total_yellows} yellow cards this season — next booking triggers a "
+                f"{ban_matches}-match suspension (accumulation threshold {threshold})"
+            )
+    return None
+
+
+def _minutes_reliability(
+    conn: sqlite3.Connection,
+    player_id: int,
+    history_past_seasons: dict[str, sqlite3.Row],
+    weights: FormWeights,
+) -> tuple[float, int]:
     """Blended share (0-1) of available team minutes this player actually plays —
-    last season's minutes share, this-season-to-date, and recent, blended with
-    the same purple-patch/blip weighting used for scoring rates (form.py /
+    a multi-season prior, this-season-to-date, and recent, blended with the
+    same purple-patch/blip weighting used for scoring rates (form.py /
     rate_blend.py), just applied to playing time instead of points.
 
     This is a real (if imperfect) proxy for pecking-order/rotation risk: a
     player who's genuinely dropped below new signings or in-form teammates
     shows it here as a declining minutes-share trend over the coming
     gameweeks, rather than the model overreacting to a single early cameo.
+
+    Pulling from up to 3 seasons rather than 1 also directly softens the
+    single worst failure mode this had (see memory: fpl-model-project, the
+    Mosquera case): a player whose ONE most-recent season happened to be a
+    squad-rotation year no longer single-handedly anchors the prior — a
+    genuinely nailed player with one down year mixed among better ones reads
+    closer to their real pecking order, not their worst recent season.
     """
     # One row per gameweek the player's team played, minutes=0 if unused — this
     # is exactly the signal needed (unlike attacking/bonus rates, which only
@@ -285,9 +347,10 @@ def _minutes_reliability(conn: sqlite3.Connection, player_id: int, last_season_r
     n_team_games = len(all_rows)
     season_share = sum((r["minutes"] or 0) for r in all_rows) / (n_team_games * 90) if n_team_games > 0 else 0.0
 
-    if last_season_row is not None and (last_season_row["minutes"] or 0) > 0:
-        last_share = min(1.0, last_season_row["minutes"] / (SEASON_GAMES * 90))
-    else:
+    last_share = multi_season_prior_rate(
+        history_past_seasons, lambda row: min(1.0, row["minutes"] / (SEASON_GAMES * 90))
+    )
+    if last_share is None:
         # No last-season data (promoted/new signing/transfer in) — fall back to
         # this season's own share rather than a punitive 0, which would wrongly
         # drag down a player who's actually nailed on but has no history yet.
@@ -320,7 +383,7 @@ def compute_player_xpts_gw(
     team_strength: dict[int, TeamStrengthResult],
     news_override: NewsOverride | None = None,
 ) -> XptsBreakdown | None:
-    from fpl_model.constants import LAST_SEASON_LABEL
+    from fpl_model.constants import RECENT_SEASON_LABELS
 
     snap = repository.get_latest_snapshot_for_player(conn, player_id)
     if snap is None:
@@ -328,10 +391,10 @@ def compute_player_xpts_gw(
     position = ELEMENT_TYPE_ID_TO_POSITION.get(snap["element_type"], "MID")
     team_id = snap["team_id"]
 
-    last_season_row = repository.get_player_history_past(conn, player_id, LAST_SEASON_LABEL)
-    attacking_rate, n = _attacking_rate_per90(conn, player_id, position, scoring, weights, last_season_row)
-    bonus_rate = _bonus_rate_per90(conn, player_id, weights, last_season_row, n)
-    defcon_per90, _ = _defcon_rate_per90(conn, player_id, last_season_row, weights)
+    history_past_seasons = repository.get_player_history_past_seasons(conn, player_id, RECENT_SEASON_LABELS)
+    attacking_rate, n = _attacking_rate_per90(conn, player_id, position, scoring, weights, history_past_seasons)
+    bonus_rate = _bonus_rate_per90(conn, player_id, weights, history_past_seasons, n)
+    defcon_per90, _ = _defcon_rate_per90(conn, player_id, history_past_seasons, weights)
     defcon_threshold = DEFCON_THRESHOLD.get(position)
     defcon_rate = _poisson_p_at_least(defcon_per90, defcon_threshold) if defcon_threshold else 0.0
     card_rate = _card_rate_per90(conn, player_id, scoring)
@@ -344,7 +407,7 @@ def compute_player_xpts_gw(
     if news_override is not None and news_override.set_piece_note:
         news_reasoning.append(f"NEWS (set-piece): {news_override.set_piece_note}")
 
-    minutes_factor, n_team_games = _minutes_reliability(conn, player_id, last_season_row, weights)
+    minutes_factor, n_team_games = _minutes_reliability(conn, player_id, history_past_seasons, weights)
     chance = snap["chance_of_playing_next_round"]
     p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
     if news_override is not None:
@@ -462,6 +525,9 @@ def compute_player_xpts_gw(
         reasoning_parts.append(role_shift)
     if p_full < 0.5:
         reasoning_parts.append(f"rotation/fitness risk (minutes-share {minutes_factor:.0%}, n={n_team_games} GW)")
+    suspension_risk = _suspension_risk_note(conn, player_id)
+    if suspension_risk:
+        reasoning_parts.append(suspension_risk)
 
     transfers_in_event = snap["transfers_in_event"] or 0
     transfers_out_event = snap["transfers_out_event"] or 0

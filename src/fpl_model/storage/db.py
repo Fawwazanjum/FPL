@@ -22,6 +22,7 @@ _COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("expected_goals", "REAL"),
         ("expected_assists", "REAL"),
         ("defensive_contribution", "INTEGER"),
+        ("bonus", "INTEGER"),
     ],
 }
 

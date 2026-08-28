@@ -1,5 +1,6 @@
-from fpl_model.analysis.rate_blend import blend_rate, shrink_toward_expected
+from fpl_model.analysis.rate_blend import blend_rate, multi_season_prior_rate, shrink_toward_expected
 from fpl_model.config import FormWeights
+from fpl_model.constants import RECENT_SEASON_LABELS, RECENT_SEASON_WEIGHTS
 
 
 def weights(**overrides):
@@ -48,3 +49,36 @@ def test_shrink_toward_expected_large_sample_stays_close_to_recent_rate():
 def test_shrink_toward_expected_small_sample_pulls_toward_expected():
     shrunk = shrink_toward_expected(recent_rate=10.0, expected_rate=2.0, recent_minutes=40, shrinkage_minutes=400)
     assert shrunk < 3.0  # small sample -> mostly pulled to the underlying-data rate
+
+
+def test_multi_season_prior_no_history_returns_none():
+    assert multi_season_prior_rate({}, lambda row: row["minutes"]) is None
+
+
+def test_multi_season_prior_single_season_uses_it_at_full_weight():
+    seasons = {RECENT_SEASON_LABELS[0]: {"minutes": 3000, "value": 10.0}}
+    result = multi_season_prior_rate(seasons, lambda row: row["value"])
+    assert result == 10.0
+
+
+def test_multi_season_prior_blends_multiple_seasons_by_recency_weight():
+    seasons = {
+        RECENT_SEASON_LABELS[0]: {"minutes": 3000, "value": 12.0},
+        RECENT_SEASON_LABELS[1]: {"minutes": 3000, "value": 6.0},
+    }
+    result = multi_season_prior_rate(seasons, lambda row: row["value"])
+    w0, w1 = RECENT_SEASON_WEIGHTS[0], RECENT_SEASON_WEIGHTS[1]
+    expected = (12.0 * w0 + 6.0 * w1) / (w0 + w1)
+    assert abs(result - expected) < 1e-9
+    assert expected > 9.0  # closer to the more-recent season's value, not a flat average
+
+
+def test_multi_season_prior_skips_a_zero_minute_season_and_renormalizes():
+    # A season with 0 minutes (e.g. injured all year) shouldn't drag a real
+    # rate toward 0 — it's excluded, not treated as a genuine 0 data point.
+    seasons = {
+        RECENT_SEASON_LABELS[0]: {"minutes": 3000, "value": 10.0},
+        RECENT_SEASON_LABELS[1]: {"minutes": 0, "value": 0.0},
+    }
+    result = multi_season_prior_rate(seasons, lambda row: row["value"])
+    assert result == 10.0
