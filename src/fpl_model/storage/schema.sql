@@ -164,6 +164,18 @@ CREATE TABLE IF NOT EXISTS chips_used (
     PRIMARY KEY (team_id, chip_name, event)
 );
 
+CREATE TABLE IF NOT EXISTS league_standings (
+    league_id INTEGER NOT NULL,
+    league_name TEXT,
+    team_id INTEGER NOT NULL,
+    entry_name TEXT,
+    player_name TEXT,
+    rank INTEGER,
+    total_points INTEGER,
+    snapshot_date TEXT,
+    PRIMARY KEY (league_id, team_id)
+);
+
 CREATE TABLE IF NOT EXISTS reports_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     generated_at TEXT NOT NULL,

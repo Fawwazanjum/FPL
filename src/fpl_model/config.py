@@ -16,6 +16,7 @@ class CacheTtlHours(BaseModel):
     element_summary: float = 24.0
     entry: float = 6.0
     understat: float = 48.0
+    league_standings: float = 6.0
 
 
 class FormWeights(BaseModel):
@@ -88,6 +89,12 @@ class AppConfig(BaseModel):
     # not a permanent record (the transfer already happened for real; this
     # config isn't what makes it happen).
     pending_transfers: list[PendingTransfer] = Field(default_factory=list)
+    # Classic mini-league IDs to track rivals for — from the league's
+    # standings URL: fantasy.premierleague.com/leagues/<id>/standings/c.
+    # Public data (the standings page and every entry's picks are visible to
+    # anyone via FPL's own site), fetched the same way this tool already
+    # fetches your own team. See analysis/rivals.py.
+    mini_league_ids: list[int] = Field(default_factory=list)
     news_overrides_path: Path = Path("./news_overrides.yaml")
     log_level: str = "INFO"
 

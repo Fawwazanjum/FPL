@@ -49,6 +49,9 @@ class FplClient:
     def get_entry_transfers(self, team_id: int) -> list[dict]:
         return self._cached_get(f"/entry/{team_id}/transfers/", "entry")
 
+    def get_league_standings(self, league_id: int, page: int = 1) -> dict:
+        return self._cached_get(f"/leagues-classic/{league_id}/standings/", "league_standings", {"page_standings": page})
+
 
 def current_or_next_event(bootstrap: dict) -> dict | None:
     events = bootstrap.get("events", [])

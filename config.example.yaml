@@ -55,5 +55,12 @@ chips:
 #   - player_out: 372
 #     player_in: 86
 
+# Optional: classic mini-league IDs to track rivals for — from the league's
+# standings URL, fantasy.premierleague.com/leagues/<id>/standings/c. Pulls
+# every rival's rank, points, and current squad (all public via FPL's own
+# site) — see analysis/rivals.py.
+# mini_league_ids:
+#   - 1234567
+
 news_overrides_path: ./news_overrides.yaml
 log_level: INFO

@@ -28,6 +28,9 @@ from fpl_model.report.schema import (
     PlayerXptsOut,
     Report,
     ReportMetadata,
+    RivalAnalysisOut,
+    RivalOwnershipOut,
+    RivalStandingOut,
     SquadAssessment,
     TeamStrengthOut,
     TransferMoveOut,
@@ -353,6 +356,38 @@ def build_understat_summary_out(conn: sqlite3.Connection, player_ids: list[int])
     else:
         reasoning = f"{mapped}/{len(player_ids)} squad players matched to Understat (npxG tracked, informational only)."
     return UnderstatSummaryOut(available=available, mapped_players=mapped, reasoning=reasoning)
+
+
+def build_rival_analysis_out(conn: sqlite3.Connection, gw: int, my_team_id: int, squad_player_ids: list[int]) -> RivalAnalysisOut:
+    from fpl_model.analysis.rivals import compute_rival_ownership, get_rival_standings
+
+    my_history = repository.get_manager_history(conn, my_team_id)
+    my_total_points = my_history[-1]["total_points"] if my_history else 0
+
+    standings = [
+        RivalStandingOut(
+            league_id=s.league_id, league_name=s.league_name, team_id=s.team_id,
+            entry_name=s.entry_name, player_name=s.player_name, rank=s.rank,
+            total_points=s.total_points, gap_to_me=s.gap_to_me,
+        )
+        for s in get_rival_standings(conn, my_total_points)
+    ]
+
+    ownership = compute_rival_ownership(conn, gw, squad_player_ids, my_team_id)
+    squad_ownership_out = {}
+    for pid, ro in ownership.items():
+        snap = repository.get_latest_snapshot_for_player(conn, pid)
+        squad_ownership_out[pid] = RivalOwnershipOut(
+            player_id=pid,
+            web_name=snap["web_name"] if snap else str(pid),
+            rivals_owning=ro.rivals_owning,
+            rivals_captaining=ro.rivals_captaining,
+            total_rivals=ro.total_rivals,
+            owned_by=ro.owned_by,
+            captained_by=ro.captained_by,
+        )
+
+    return RivalAnalysisOut(standings=standings, squad_ownership=squad_ownership_out)
 
 
 def write(report: Report, config: AppConfig) -> Path:

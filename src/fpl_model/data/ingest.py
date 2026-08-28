@@ -112,6 +112,9 @@ def run_full_refresh(
             # different site's tolerance, not ours, controls.
             _ingest_understat(conn, squad_player_ids, report)
 
+        if config.mini_league_ids:
+            _ingest_rivals(conn, client, config, gw, snapshot_date, report)
+
     return report
 
 
@@ -315,6 +318,65 @@ def _ingest_element_summaries(
             if p.get("season_name") in RECENT_SEASON_LABELS
         ]
         repository.upsert_player_history_past(conn, past_rows)
+
+
+MAX_LEAGUE_STANDINGS_PAGES = 5  # 50 entries/page by default — caps a runaway fetch for an unexpectedly huge league
+
+
+def _ingest_rivals(
+    conn: sqlite3.Connection,
+    client: FplClient,
+    config: AppConfig,
+    gw: int,
+    snapshot_date: str,
+    report: IngestReport,
+) -> None:
+    """Pulls standings for every configured mini-league (team_id, rank,
+    points — all public via FPL's own site) and then, for every distinct
+    rival that turns up, their picks for the current gameweek — reusing
+    get_entry_picks/upsert_manager_picks exactly as already used for the
+    user's own team, since manager_picks was never actually scoped to only
+    one team_id. See analysis/rivals.py for what's built on top of this."""
+    for league_id in config.mini_league_ids:
+        standings_rows: list[dict] = []
+        league_name = None
+        page = 1
+        while page <= MAX_LEAGUE_STANDINGS_PAGES:
+            try:
+                payload = client.get_league_standings(league_id, page=page)
+            except FplApiError as exc:
+                msg = f"Could not fetch standings for league {league_id} (page {page}): {exc}"
+                report.data_quality_flags.append(msg)
+                log.warning(msg)
+                break
+            league_name = payload.get("league", {}).get("name", league_name)
+            results = payload.get("standings", {}).get("results", [])
+            for r in results:
+                standings_rows.append({
+                    "league_id": league_id,
+                    "league_name": league_name,
+                    "team_id": r.get("entry"),
+                    "entry_name": r.get("entry_name"),
+                    "player_name": r.get("player_name"),
+                    "rank": r.get("rank"),
+                    "total_points": r.get("total"),
+                    "snapshot_date": snapshot_date,
+                })
+            if not payload.get("standings", {}).get("has_next"):
+                break
+            page += 1
+        repository.upsert_league_standings(conn, standings_rows)
+        log.info("League %s ('%s'): %d entries", league_id, league_name, len(standings_rows))
+
+    rival_team_ids = repository.get_all_rival_team_ids(conn, exclude_team_id=config.team_id)
+    for rival_team_id in rival_team_ids:
+        try:
+            picks = client.get_entry_picks(rival_team_id, gw)
+            _ingest_picks(conn, rival_team_id, gw, picks)
+        except FplApiError as exc:
+            msg = f"Could not fetch picks for rival team {rival_team_id}, GW{gw}: {exc}"
+            report.data_quality_flags.append(msg)
+            log.warning(msg)
 
 
 def _to_float(value) -> float | None:

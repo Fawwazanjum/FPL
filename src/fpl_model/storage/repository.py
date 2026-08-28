@@ -111,6 +111,29 @@ def upsert_understat_player_history(conn: sqlite3.Connection, rows: list[dict[st
     _upsert_many(conn, "understat_player_history", cols, rows)
 
 
+def upsert_league_standings(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    cols = ["league_id", "league_name", "team_id", "entry_name", "player_name", "rank", "total_points", "snapshot_date"]
+    _upsert_many(conn, "league_standings", cols, rows)
+
+
+def get_league_standings(conn: sqlite3.Connection, league_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM league_standings WHERE league_id = ? ORDER BY rank ASC", (league_id,)
+    ).fetchall()
+
+
+def get_all_tracked_league_ids(conn: sqlite3.Connection) -> list[int]:
+    rows = conn.execute("SELECT DISTINCT league_id FROM league_standings").fetchall()
+    return [r["league_id"] for r in rows]
+
+
+def get_all_rival_team_ids(conn: sqlite3.Connection, exclude_team_id: int) -> set[int]:
+    rows = conn.execute(
+        "SELECT DISTINCT team_id FROM league_standings WHERE team_id != ?", (exclude_team_id,)
+    ).fetchall()
+    return {r["team_id"] for r in rows}
+
+
 def log_report(conn: sqlite3.Connection, generated_at: str, gameweek: int | None, file_path: str) -> None:
     conn.execute(
         "INSERT INTO reports_log (generated_at, gameweek, file_path) VALUES (?, ?, ?)",

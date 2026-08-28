@@ -138,6 +138,13 @@ def main(argv: list[str] | None = None) -> int:
     report.news_overrides_applied = build_news_overrides_applied_out(conn, news_overrides)
     report.understat_summary = build_understat_summary_out(conn, squad_state.current_squad)
 
+    if config.mini_league_ids:
+        from fpl_model.report.writer import build_rival_analysis_out
+
+        report.rival_analysis = build_rival_analysis_out(
+            conn, squad_state.gameweek, config.team_id, squad_state.current_squad
+        )
+
     path = write(report, config)
     repository.log_report(conn, report.metadata.generated_at, report.metadata.gameweek, str(path))
     log.info("Report written to %s", path)

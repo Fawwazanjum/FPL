@@ -198,6 +198,37 @@ class UnderstatSummaryOut(BaseModel):
     reasoning: str
 
 
+class RivalStandingOut(BaseModel):
+    league_id: int
+    league_name: str
+    team_id: int
+    entry_name: str
+    player_name: str
+    rank: int
+    total_points: int
+    gap_to_me: int  # positive = I'm ahead, negative = they're ahead
+
+
+class RivalOwnershipOut(BaseModel):
+    player_id: int
+    web_name: str
+    rivals_owning: int
+    rivals_captaining: int
+    total_rivals: int
+    owned_by: list[str] = []
+    captained_by: list[str] = []
+
+
+class RivalAnalysisOut(BaseModel):
+    # Informational only — deliberately not wired into transfer_recommendation,
+    # chip_advice, or xpts scoring anywhere. Context for a conversation, not
+    # an input the automated optimizer acts on (see memory: fpl-model-project
+    # — priority stays raw accuracy; rival-awareness is a secondary, growing-
+    # over-the-season lens, not something that overrides EV-based picks).
+    standings: list[RivalStandingOut] = []
+    squad_ownership: dict[int, RivalOwnershipOut] = {}
+
+
 class Report(BaseModel):
     metadata: ReportMetadata
     squad: SquadAssessment
@@ -208,3 +239,4 @@ class Report(BaseModel):
     recommended_lineup: LineupOut | None = None
     news_overrides_applied: list[NewsOverrideOut] = []
     understat_summary: UnderstatSummaryOut | None = None
+    rival_analysis: RivalAnalysisOut | None = None
