@@ -83,6 +83,7 @@ class PlayerXptsOut(BaseModel):
     transfers_out_event: int = 0
     defcon_per90: float = 0.0
     defcon_percentile: float | None = None  # 0-100 within this player's position, across the full league pool
+    minutes_stdev: float = 0.0  # game-to-game std dev of minutes played this season — high = unpredictable, not just low-share
 
 
 class TeamStrengthOut(BaseModel):
@@ -97,6 +98,8 @@ class TeamStrengthOut(BaseModel):
     defense_overperformance: float
     attack_index: float
     defense_index: float
+    attack_sos_adjustment: float = 0.0
+    defense_sos_adjustment: float = 0.0
 
 
 class ValuePickOut(BaseModel):

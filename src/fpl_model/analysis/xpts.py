@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import statistics
 from dataclasses import dataclass
 
 from fpl_model.analysis.rate_blend import blend_rate, multi_season_prior_rate
@@ -53,6 +54,18 @@ ATTACK_MULTIPLIER_MIN, ATTACK_MULTIPLIER_MAX = 0.5, 1.8
 MIN_MINUTES_FACTOR = 0.15
 SEASON_GAMES = 38
 DOUBTFUL_DEFAULT_CHANCE = 0.5
+# A player whose minutes swing wildly game-to-game (impact sub some weeks,
+# full 90 others, an unused bench spot in between) can carry the SAME average
+# minutes-share as a metronomic "always exactly 70" player, but a very
+# different week-to-week risk profile — this matters most for captaincy (an
+# average-based p_full doesn't distinguish "safe medium bet" from "high-
+# variance coin flip") even though it doesn't change the expected-points
+# total itself. Informational only, same as transfer momentum — flagged in
+# reasoning, not folded into scoring. 25 minutes chosen as "notable" because
+# it's roughly the gap between a nailed starter's normal matchday variance
+# (subbed a little early/late) and genuine rotation risk.
+MINUTES_VOLATILITY_NOTABLE_STDEV = 25.0
+MINUTES_VOLATILITY_MIN_GAMES = 3
 # Below this, net gameweek transfer activity isn't worth mentioning — informational
 # only (see memory: fpl-model-project), it never touches `total`, so this only
 # affects whether a reasoning line gets printed, not any score.
@@ -83,6 +96,7 @@ class XptsBreakdown:
     card_penalty: float
     total: float
     reasoning: str
+    minutes_stdev: float
     transfers_in_event: int
     transfers_out_event: int
 
@@ -363,6 +377,21 @@ def _minutes_reliability(
     return max(MIN_MINUTES_FACTOR, min(1.0, blend.blended_rate)), n_team_games
 
 
+def _minutes_stdev_this_season(conn: sqlite3.Connection, player_id: int) -> tuple[float, int]:
+    """Game-to-game standard deviation of minutes played THIS season only —
+    deliberately not blended with a prior the way the rate stats are; this is
+    describing a current, live pattern (has the manager settled into using
+    this player consistently, or not), not a "true talent" estimate to
+    stabilize with history. One row per team game (0 for an unused sub), same
+    source as _minutes_reliability above."""
+    all_rows = repository.get_player_gw_history_all(conn, player_id)
+    minutes = [r["minutes"] or 0 for r in all_rows]
+    n = len(minutes)
+    if n < 2:
+        return 0.0, n
+    return statistics.pstdev(minutes), n
+
+
 def _clean_sheet_probability(own_defense_index: float, opp_attack_index: float) -> float:
     p = CLEAN_SHEET_BASE_RATE + CLEAN_SHEET_INDEX_SENSITIVITY * (own_defense_index - opp_attack_index)
     return max(CLEAN_SHEET_MIN, min(CLEAN_SHEET_MAX, p))
@@ -408,6 +437,7 @@ def compute_player_xpts_gw(
         news_reasoning.append(f"NEWS (set-piece): {news_override.set_piece_note}")
 
     minutes_factor, n_team_games = _minutes_reliability(conn, player_id, history_past_seasons, weights)
+    minutes_stdev, minutes_stdev_n = _minutes_stdev_this_season(conn, player_id)
     chance = snap["chance_of_playing_next_round"]
     p_available = 1.0 if chance is None else max(0.0, min(1.0, chance / 100))
     if news_override is not None:
@@ -528,6 +558,11 @@ def compute_player_xpts_gw(
     suspension_risk = _suspension_risk_note(conn, player_id)
     if suspension_risk:
         reasoning_parts.append(suspension_risk)
+    if minutes_stdev_n >= MINUTES_VOLATILITY_MIN_GAMES and minutes_stdev >= MINUTES_VOLATILITY_NOTABLE_STDEV:
+        reasoning_parts.append(
+            f"unpredictable minutes (±{minutes_stdev:.0f} min game-to-game over {minutes_stdev_n} GWs) "
+            "— boom/bust risk, weigh that before a captaincy punt even if the average share looks fine"
+        )
 
     transfers_in_event = snap["transfers_in_event"] or 0
     transfers_out_event = snap["transfers_out_event"] or 0
@@ -558,6 +593,7 @@ def compute_player_xpts_gw(
         card_penalty=p_full * card_rate_total,
         total=total,
         reasoning="; ".join(reasoning_parts),
+        minutes_stdev=round(minutes_stdev, 1),
         transfers_in_event=transfers_in_event,
         transfers_out_event=transfers_out_event,
     )

@@ -26,6 +26,19 @@ from fpl_model.storage import repository
 # over a team's first ~8-10 games rather than being taken at face value
 # immediately — deliberately conservative, not calibrated against real data.
 TEAM_STRENGTH_SHRINKAGE_GAMES = 8
+# How much credit/discount a team's attack_index/defense_index gets for the
+# average strength of the opponents it's actually faced so far (see memory:
+# fpl-model-project) — previously attack_xg/defense_xgc were taken at face
+# value regardless of opposition, so a team that happened to open the season
+# against three promoted sides looked artificially strong, and one that
+# opened against the reigning champions and the two other "big" sides looked
+# artificially weak, purely from schedule luck rather than true quality. This
+# is a single-pass adjustment (opponents' PRE-adjustment z-scores), not a
+# fully converged Massey/Colley-style rating — deliberately: with 1-2 games
+# per team early on, chasing convergence would be false precision on top of
+# an already-thin sample. Same in-season shrink factor applies to the
+# adjusted value as to the raw one, so this doesn't overreact early either.
+SOS_SENSITIVITY = 0.4
 
 
 @dataclass
@@ -53,6 +66,12 @@ class TeamStrengthResult:
     attack_index_away: float = 0.0
     defense_index_home: float = 0.0
     defense_index_away: float = 0.0
+    # The SOS_SENSITIVITY-weighted credit/discount already folded into
+    # attack_index/defense_index above — kept visible separately so "why did
+    # this team's rating move" has a concrete answer (a tough or soft
+    # schedule so far), not just an opaque combined number.
+    attack_sos_adjustment: float = 0.0
+    defense_sos_adjustment: float = 0.0
 
 
 def _actual_goals_by_team(conn: sqlite3.Connection) -> tuple[dict[int, int], dict[int, int], dict[int, int]]:
@@ -101,6 +120,33 @@ def _venue_strength_by_team(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
     return {row["team_id"]: row for row in repository.get_latest_team_snapshots(conn)}
 
 
+def _opponents_faced_by_team(conn: sqlite3.Connection) -> dict[int, list[int]]:
+    opponents: dict[int, list[int]] = {}
+    for fx in repository.get_finished_fixtures(conn):
+        h, a = fx["team_h"], fx["team_a"]
+        opponents.setdefault(h, []).append(a)
+        opponents.setdefault(a, []).append(h)
+    return opponents
+
+
+def _strength_of_schedule_adjustment(
+    team_ids: list[int], opponents_faced: dict[int, list[int]], opponent_index_raw: dict[int, float]
+) -> dict[int, float]:
+    """Average PRE-adjustment index of the opponents a team has actually
+    faced, for use as a credit/discount term — e.g. average DEFENSE index
+    faced feeds the ATTACK adjustment (faced tough defenses and still scored
+    well -> more credit than the raw number implies; faced weak defenses ->
+    discount), and vice versa for defense against opponents' attack index."""
+    adjustment: dict[int, float] = {}
+    for tid in team_ids:
+        opponents = opponents_faced.get(tid, [])
+        if not opponents:
+            adjustment[tid] = 0.0
+            continue
+        adjustment[tid] = statistics.fmean(opponent_index_raw.get(opp, 0.0) for opp in opponents)
+    return adjustment
+
+
 def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthResult]:
     goals_for, goals_against, games_played = _actual_goals_by_team(conn)
     attack_xg, defense_xgc = _attack_xg_and_defense_xgc_by_team(conn)
@@ -111,6 +157,16 @@ def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthRes
     defense_index_raw = {tid: -defense_xgc.get(tid, 0.0) for tid in team_ids}
     attack_z = _zscores(attack_index_raw)
     defense_z = _zscores(defense_index_raw)
+
+    # Strength-of-schedule: credit/discount each team's raw z-score by the
+    # average PRE-adjustment strength of who they've actually played —
+    # attack gets adjusted by opponents' defense_z faced, defense by
+    # opponents' attack_z faced. See SOS_SENSITIVITY docstring.
+    opponents_faced = _opponents_faced_by_team(conn)
+    attack_sos = _strength_of_schedule_adjustment(team_ids, opponents_faced, defense_z)
+    defense_sos = _strength_of_schedule_adjustment(team_ids, opponents_faced, attack_z)
+    attack_z = {tid: attack_z.get(tid, 0.0) + SOS_SENSITIVITY * attack_sos.get(tid, 0.0) for tid in team_ids}
+    defense_z = {tid: defense_z.get(tid, 0.0) + SOS_SENSITIVITY * defense_sos.get(tid, 0.0) for tid in team_ids}
 
     # FPL's own home/away ratings, z-scored the same way as the xG-based
     # indices above so they're on a comparable scale for xpts.py to blend.
@@ -148,5 +204,7 @@ def compute_team_strength(conn: sqlite3.Connection) -> dict[int, TeamStrengthRes
             attack_index_away=attack_away_z.get(tid, 0.0),
             defense_index_home=defense_home_z.get(tid, 0.0),
             defense_index_away=defense_away_z.get(tid, 0.0),
+            attack_sos_adjustment=round(SOS_SENSITIVITY * attack_sos.get(tid, 0.0) * shrink, 3),
+            defense_sos_adjustment=round(SOS_SENSITIVITY * defense_sos.get(tid, 0.0) * shrink, 3),
         )
     return results

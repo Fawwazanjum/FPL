@@ -90,3 +90,64 @@ def test_more_games_played_trusts_the_index_more(conn):
     result = compute_team_strength(conn)
     assert result[1].games_played == 8
     assert abs(result[1].attack_index - 0.5) < 1e-9  # shrink = 8/(8+8) = 0.5
+
+
+def test_strength_of_schedule_discounts_attack_after_facing_weak_defense(conn):
+    # Team A's attack faced only WeakDef (high xGC). StrongDef is a separate
+    # team purely to give the league-wide defense z-score something to spread
+    # over — it never plays A.
+    repository.upsert_team_snapshots(
+        conn, [_team_snapshot(1, "A"), _team_snapshot(2, "WeakDef"), _team_snapshot(3, "StrongDef")]
+    )
+    repository.upsert_player_snapshots(conn, [
+        _player_snapshot(101, 1, 90, 1.5, 1.0),
+        _player_snapshot(201, 2, 90, 1.0, 3.0),  # weak defense: high xGC
+        _player_snapshot(301, 3, 90, 1.0, 0.2),  # strong defense: low xGC
+    ])
+    repository.upsert_fixtures(conn, [
+        _fixture(1, 1, 1, 2, 2, 1),  # A vs WeakDef
+        _fixture(2, 1, 2, 3, 1, 1),  # WeakDef vs StrongDef — doesn't involve A
+    ])
+
+    result = compute_team_strength(conn)
+    assert result[1].attack_sos_adjustment < 0
+
+
+def test_strength_of_schedule_credits_attack_after_facing_strong_defense(conn):
+    # Same shape as above, but A's only fixture is against the STRONG defense
+    # this time — the sign of the adjustment should flip.
+    repository.upsert_team_snapshots(
+        conn, [_team_snapshot(1, "A"), _team_snapshot(2, "WeakDef"), _team_snapshot(3, "StrongDef")]
+    )
+    repository.upsert_player_snapshots(conn, [
+        _player_snapshot(101, 1, 90, 1.5, 1.0),
+        _player_snapshot(201, 2, 90, 1.0, 3.0),
+        _player_snapshot(301, 3, 90, 1.0, 0.2),
+    ])
+    repository.upsert_fixtures(conn, [
+        _fixture(1, 1, 1, 3, 1, 1),  # A vs StrongDef
+        _fixture(2, 1, 2, 3, 1, 1),  # WeakDef vs StrongDef — doesn't involve A
+    ])
+
+    result = compute_team_strength(conn)
+    assert result[1].attack_sos_adjustment > 0
+
+
+def test_strength_of_schedule_credits_defense_after_facing_strong_attack(conn):
+    # Team A's defense faced only StrongAtt (high xG). WeakAtt is a separate
+    # team purely to give the attack z-score spread to work with.
+    repository.upsert_team_snapshots(
+        conn, [_team_snapshot(1, "A"), _team_snapshot(2, "StrongAtt"), _team_snapshot(3, "WeakAtt")]
+    )
+    repository.upsert_player_snapshots(conn, [
+        _player_snapshot(101, 1, 90, 1.0, 1.0),
+        _player_snapshot(201, 2, 90, 3.0, 1.0),  # strong attack: high xG
+        _player_snapshot(301, 3, 90, 0.2, 1.0),  # weak attack: low xG
+    ])
+    repository.upsert_fixtures(conn, [
+        _fixture(1, 1, 1, 2, 1, 1),  # A vs StrongAtt
+        _fixture(2, 1, 2, 3, 1, 1),  # StrongAtt vs WeakAtt — doesn't involve A
+    ])
+
+    result = compute_team_strength(conn)
+    assert result[1].defense_sos_adjustment > 0

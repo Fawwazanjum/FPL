@@ -191,6 +191,7 @@ def build_analysis_section(
             transfers_out_event=xr.transfers_out_event,
             defcon_per90=round(xr.defcon_per90, 2),
             defcon_percentile=_defcon_percentile(pid, xr.defcon_per90),
+            minutes_stdev=xr.minutes_stdev,
         )
         for pid, xr in xpts_results.items()
     }
@@ -208,6 +209,8 @@ def build_analysis_section(
             defense_overperformance=round(ts.defense_overperformance, 2),
             attack_index=round(ts.attack_index, 2),
             defense_index=round(ts.defense_index, 2),
+            attack_sos_adjustment=ts.attack_sos_adjustment,
+            defense_sos_adjustment=ts.defense_sos_adjustment,
         )
         for ts in team_strength.values()
     ]
